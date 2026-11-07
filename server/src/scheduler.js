@@ -104,6 +104,7 @@ export class Scheduler {
       schedule.subscribers.unshift(creator.toLowerCase());
     }
     schedule.createdAt = q.schedule?.createdAt ?? new Date().toISOString();
+    schedule.createdBy = q.schedule ? q.schedule.createdBy ?? null : creator ?? null;
     schedule.nextRunAt = nextRunAt(schedule).toISOString();
     q.schedule = schedule;
     q.updatedAt = new Date().toISOString();

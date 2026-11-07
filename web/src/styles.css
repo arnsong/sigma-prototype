@@ -462,3 +462,10 @@ code, .mono { font-family: var(--font-mono); font-size: 12px; }
   .feedback { margin-left: 0; }
   .timeline { grid-template-columns: 1fr; }
 }
+
+/* ---------- identity ---------- */
+.user-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 4px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text-secondary); cursor: pointer; font-size: 12px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-chip:hover { border-color: var(--accent); color: var(--text-primary); }
+.avatar { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 11px; flex: none; }
+.chart-readonly { margin-left: 8px; }
+.group-owner { font-weight: 400; }

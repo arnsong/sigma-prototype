@@ -34,13 +34,14 @@ The app has its own name and styling and carries no Stripe branding. Every Sigma
   - A webhook can receive a `sigma.scheduled_query_run.created` event in Sigma's payload shape.
   - Past runs can be viewed or downloaded.
 - **Metrics**: metric groups of up to 20 reports. Each report shows its saved chart, or its row count if it has no chart.
+- **Team identity**: set your email in the top bar. Saved and scheduled queries are grouped by creator ("Created by you" / "Created by your team"), and charts and metric groups can only be changed by their author, as in Sigma. This identifies people but doesn't authenticate them; for real sign-in, put the app behind SSO or a proxy that sets `X-User-Email`.
 - **Data available through …**: the `data_load_time` equivalent, shown in the top bar.
 - **Read-only**: one SELECT / WITH / SHOW / DESCRIBE / EXPLAIN statement per run.
 - **Sample data**: a small billing schema seeded into Trino's memory catalog at `memory.billing`. More schemas can be added later with `SCHEMA_BROWSER`.
   - Core: `balance_transactions`, `charges`, `customers`, `disputes`, `refunds`
   - Billing: `invoices`, `prices`, `products`, `subscriptions`
 
-Deliberate differences from Sigma are listed at the end of the [parity checklist](docs/sigma-parity.md#deliberately-different). The main ones: no Stripe branding, no user accounts (everyone on the server is one team), and a small sample schema instead of Stripe's full one.
+Deliberate differences from Sigma are listed at the end of the [parity checklist](docs/sigma-parity.md#deliberately-different). The main ones: no Stripe branding, identity without authentication, and a small sample schema instead of Stripe's full one.
 
 ## Architecture
 
@@ -133,7 +134,7 @@ node scripts/e2e-parity.cjs http://localhost:3001
 | `SMTP_URL` | – | Sends scheduled results by email, e.g. `smtps://user:pass@smtp.example.com` |
 | `MAIL_FROM` | `Query Studio <reports@localhost>` | From address for those emails |
 | `PUBLIC_URL` | `http://localhost:$PORT` | Base URL for CSV and unsubscribe links in emails and webhooks |
-| `USER_EMAIL` | – | Address auto-subscribed as a schedule's creator (no user accounts yet) |
+| `USER_EMAIL` | – | Default identity when the browser hasn't set one (`X-User-Email`) |
 | `PORT` | `3001` | HTTP port |
 | `DATA_DIR` | `./data` | Where saved queries, history and scheduled results are stored |
 

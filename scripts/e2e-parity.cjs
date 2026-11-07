@@ -28,7 +28,8 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
   page = p;
   const pageErrors = [];
   p.on('pageerror', e => pageErrors.push(e.message));
-  p.on('dialog', d => d.accept(d.type() === 'prompt' ? 'Key metrics' : undefined));
+  let promptAnswer = 'Key metrics';
+  p.on('dialog', d => d.accept(d.type() === 'prompt' ? promptAnswer : undefined));
   const shot = async n => SHOTS && p.screenshot({ path: `${SHOTS}/${n}.png` });
   const editorText = () => p.textContent('.cm-content');
   const setSql = async sql => {
@@ -259,6 +260,40 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
     assert(counted?.count && /\d+\s*rows/.test(counted.count), `query without a chart should show row count: ${JSON.stringify(cards)}`);
     assert((await p.textContent('.metrics-head')).includes('2 of 20 reports'), 'report counter');
     await shot('05-metrics');
+  });
+
+  // ---- Identity: "your" vs "your team's" queries, author-only edits -------------------
+  await check('Saved queries: yours vs your team\'s; scheduled: you vs others', async () => {
+    await p.click('.topnav >> text=Queries');
+    assert((await p.textContent('.user-chip')).includes('me@example.com'), 'not acting as USER_EMAIL');
+    assert(/Saved\s*\d+\s*Created by you/.test(await p.textContent('.side-scroll')), 'no "Created by you" group');
+    promptAnswer = 'bo@example.com';
+    await p.click('.user-chip');
+    await p.waitForFunction(() => document.querySelector('.user-chip').textContent.includes('bo@example.com'));
+    await p.waitForFunction(() => document.querySelector('.side-scroll').textContent.includes('Created by your team'));
+    const t = await p.textContent('.side-scroll');
+    assert(/Created by your team[\s\S]*me@example\.com/.test(t), 'team queries not attributed');
+    assert(/Scheduled\s*1\s*Created by others/.test(t), 'schedule not under "Created by others"');
+  });
+  await check('"Charts are only editable by the author of the query."', async () => {
+    await p.click('.side-item >> text=Card brand volume (copy)');
+    await run();
+    await p.click('.results-head >> text=Chart');
+    await p.waitForSelector('.chart-box svg');
+    await p.click('.chart-controls >> text=Bar');
+    assert(await p.$('.chart-save[disabled]'), 'teammate can save the chart');
+    assert((await p.textContent('.chart-controls')).includes('Charts are only editable by the author of the query.'), 'no author note');
+    await shot('06-teammate-chart');
+  });
+  await check('"Only the author of the metric group can edit or delete" it', async () => {
+    await p.click('.topnav >> text=Metrics');
+    await p.waitForSelector('.metric-group');
+    const head = await p.textContent('.metric-group-head');
+    assert(head.includes('Only the author can edit this group') && head.includes('by me@example.com'), `head: ${head}`);
+    assert(!(await p.$('.metric-group-head >> text=Delete')) && !(await p.$('.metric-card .icon-btn')), 'teammate has edit controls');
+    promptAnswer = 'me@example.com';
+    await p.click('.user-chip');
+    await p.waitForSelector('.metric-group-head >> text=Delete');
   });
 
   await check('No page errors during the run', async () => { assert(pageErrors.length === 0, pageErrors.join('; ')); });

@@ -27,10 +27,10 @@ Verification legend:
 
 | Sigma behaviour (source) | Here | Verified |
 |---|---|---|
-| "The navigator window to the left of the editor" shows saved queries, the team's queries, the table schema and templates (WQ) | Left sidebar with a **Queries** tab (Saved, Scheduled, Templates, History) and a **Schema** tab. Saved queries are shared by everyone on the server | e2e |
+| "The navigator window to the left of the editor" shows saved queries, the team's queries, the table schema and templates (WQ) | Left sidebar with a **Queries** tab (Saved, Scheduled, Templates, History) and a **Schema** tab. Saved is split into "Created by you" and "Created by your team" | e2e |
 | Selecting a saved query or template "loads it into the query editor", then you click **Run** (WQ) | Same | e2e |
 | To start from a saved query: its "overflow menu" → **Make a copy**, or load it and click **Make a copy** (WQ) | ⋯ menu on saved items (**Make a copy**, **Delete**), plus a **Make a copy** button in the editor header | e2e |
-| Upcoming scheduled queries appear "under Scheduled within the Queries tab", grouped by creator (SQ) | **Scheduled** section, "Created by you" (there are no user accounts yet, so there is one group) | e2e |
+| Upcoming scheduled queries appear "under Scheduled within the Queries tab", grouped by creator (SQ) | **Scheduled** section, split into "Created by you" and "Created by others" | unit, e2e |
 
 ## Editor and running
 
@@ -61,6 +61,7 @@ Verification legend:
 | "Resize each column." (WQ) | Drag a header's right edge | e2e |
 | Chart "for queries with fewer than 10,000 results"; "line or bar charts with custom y-axes and x-axes"; "Group by any table column" (WQ) | **Chart** tab: Line/Bar, X-axis, Y-axis, Group by; a message instead of a chart at 10,000+ rows | e2e |
 | A chart saved to a query "appears with your chosen settings every time you run the query" (WQ) | **Save chart** stores the settings on the query and reapplies them on each run | unit, e2e |
+| "Charts are only editable by the author of the query." (WQ) | Teammates can view and adjust the chart, but **Save chart** is disabled with that message, and the server refuses the change (403) | unit, e2e |
 | "Download CSV … includes all query results, so you're not limited to the 1,000 viewable results." (WQ) | **Download CSV** sends every row, re-running the query without the cap when needed | unit |
 
 ## Saving and sharing
@@ -87,13 +88,14 @@ Verification legend:
 |---|---|---|
 | "Create metrics from your Sigma reports and organize them in metric groups"; groups show the report's chart, or "the number of rows" when no chart is set (HSW) | **Metrics** page with groups of report cards: saved chart, or row count | e2e |
 | "You can add up to 20 Sigma reports across all metric groups." Deleting a group doesn't delete its reports (HSW) | Enforced on the server | unit |
+| "Only the author of the metric group can edit or delete the metric group." (HSW) | Teammates see "Only the author can edit this group" with no edit controls; the server refuses the change (403) | unit, e2e |
 
 ## Deliberately different
 
 | Sigma | Here | Why |
 |---|---|---|
 | Stripe Dashboard branding and navigation (Reports > Sigma) | Own name ("Query Studio") and styling | Copying Stripe's brand would be impersonation |
-| Stripe accounts, team permissions, "Charts are only editable by the author", per-creator schedule groups | No accounts: everyone on the server is one team | There's no user model yet |
+| Signing in with a Stripe account | A lightweight identity: you set your email in the top bar and it's sent as `X-User-Email`. It drives authorship and the author-only rules, but it isn't authentication | Put the app behind your SSO or proxy (which can set the header) for real sign-in |
 | The full Stripe schema (charges, payouts, Connect, Issuing, Tax, …) | A small sample billing schema (Core, Billing). Add more with `SCHEMA_BROWSER` | We're adding schemas selectively later |
 | Report templates tied to Stripe financial reports; Queries and Reports API | Starter templates for the sample data; this app's own HTTP API | Stripe-specific |
 | Training-data consent setting for the assistant | Not applicable | |

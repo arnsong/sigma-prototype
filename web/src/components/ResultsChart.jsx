@@ -80,7 +80,7 @@ export function buildSeries(columns, rows, cfg) {
   return { labels, series: names.map((name, i) => ({ name, values: values[i] })) };
 }
 
-export function ResultsChart({ columns, rows, rowCount, truncated, limit, config, onChange, onSave, canSave, savedState, compactView = false }) {
+export function ResultsChart({ columns, rows, rowCount, truncated, limit, config, onChange, onSave, canSave, saveHint, savedState, compactView = false }) {
   const [box, width] = useWidth();
   const [hover, setHover] = useState(null);
   const numericCols = columns.filter(c => isNumericType(c.type));
@@ -161,9 +161,12 @@ export function ResultsChart({ columns, rows, rowCount, truncated, limit, config
             </select>
           </label>
           {onSave && (
-            <button className="btn btn-secondary btn-sm chart-save" onClick={onSave} disabled={!canSave || savedState === 'saved'} title={canSave ? 'Show this chart every time the query runs' : 'Save the query first'}>
+            <button className="btn btn-secondary btn-sm chart-save" onClick={onSave} disabled={!canSave || savedState === 'saved'} title={saveHint}>
               {savedState === 'saved' ? 'Chart saved' : 'Save chart'}
             </button>
+          )}
+          {onSave && !canSave && saveHint?.startsWith('Charts') && (
+            <span className="muted small chart-readonly">{saveHint}</span>
           )}
         </div>
       )}

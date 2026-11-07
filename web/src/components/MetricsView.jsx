@@ -21,7 +21,7 @@ function MetricCard({ query, onOpen, onRemove }) {
     <div className="metric-card">
       <div className="metric-head">
         <button className="link metric-title" onClick={() => onOpen(query)} title="Open in the editor">{query.title}</button>
-        <button className="icon-btn" onClick={onRemove} aria-label={`Remove ${query.title} from this group`} title="Remove from group">×</button>
+        {onRemove && <button className="icon-btn" onClick={onRemove} aria-label={`Remove ${query.title} from this group`} title="Remove from group">×</button>}
       </div>
       {!run && !error && <div className="metric-loading"><div className="spinner" aria-hidden="true" /></div>}
       {error && <div className="side-error">{error}</div>}
@@ -32,7 +32,7 @@ function MetricCard({ query, onOpen, onRemove }) {
   );
 }
 
-export function MetricsView({ saved, maxReports = 20, onOpenQuery, flash }) {
+export function MetricsView({ saved, user, maxReports = 20, onOpenQuery, flash }) {
   const [groups, setGroups] = useState(null);
   const [error, setError] = useState(null);
   const refresh = () => api.metricGroups().then(setGroups).catch(e => setError(e.message));
@@ -72,21 +72,24 @@ export function MetricsView({ saved, maxReports = 20, onOpenQuery, flash }) {
       )}
       {groups?.map(g => {
         const available = saved.filter(q => !g.queryIds.includes(q.id));
+        // "Only the author of the metric group can edit or delete the metric group."
+        const canEdit = !g.createdBy || g.createdBy === user;
         return (
           <section key={g.id} className="metric-group">
             <div className="metric-group-head">
-              <h2>{g.name}</h2>
-              <select value="" onChange={e => add(g, e.target.value)} disabled={used >= maxReports || available.length === 0} aria-label={`Add a report to ${g.name}`}>
+              <h2>{g.name}{g.createdBy && g.createdBy !== user && <span className="muted small group-owner"> · by {g.createdBy}</span>}</h2>
+              {!canEdit && <span className="muted small">Only the author can edit this group</span>}
+              {canEdit && <select value="" onChange={e => add(g, e.target.value)} disabled={used >= maxReports || available.length === 0} aria-label={`Add a report to ${g.name}`}>
                 <option value="">{used >= maxReports ? `Limit of ${maxReports} reports reached` : available.length ? 'Add report…' : 'No saved reports to add'}</option>
                 {available.map(q => <option key={q.id} value={q.id}>{q.title}</option>)}
-              </select>
-              <button className="btn btn-ghost btn-sm" onClick={() => rename(g)}>Rename</button>
-              <button className="btn btn-ghost btn-sm danger-text" onClick={() => remove(g)}>Delete</button>
+              </select>}
+              {canEdit && <button className="btn btn-ghost btn-sm" onClick={() => rename(g)}>Rename</button>}
+              {canEdit && <button className="btn btn-ghost btn-sm danger-text" onClick={() => remove(g)}>Delete</button>}
             </div>
             {g.queryIds.length === 0 && <div className="muted">Add saved reports to this group.</div>}
             <div className="metric-grid">
               {g.queryIds.filter(id => byId[id]).map(id => (
-                <MetricCard key={id} query={byId[id]} onOpen={onOpenQuery} onRemove={() => drop(g, id)} />
+                <MetricCard key={id} query={byId[id]} onOpen={onOpenQuery} onRemove={canEdit ? () => drop(g, id) : null} />
               ))}
             </div>
           </section>

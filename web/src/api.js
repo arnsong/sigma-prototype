@@ -1,7 +1,19 @@
+const USER_KEY = 'query-studio.user';
+export function getUser() {
+  try { return localStorage.getItem(USER_KEY) || null; } catch { return null; }
+}
+export function setUser(email) {
+  try { email ? localStorage.setItem(USER_KEY, email) : localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
+}
+
 async function req(method, url, body) {
+  const headers = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  const user = getUser();
+  if (user) headers['X-User-Email'] = user;
   const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (res.status === 204) return null;

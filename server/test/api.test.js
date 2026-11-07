@@ -15,8 +15,10 @@ async function withApp(fakeOpts, config, fn) {
   const app = createApp({ client, store, scheduler, assistant, config: { maxRows: 1000, schemas: [], ...config } });
   const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  const call = async (method, path, body) => {
-    const res = await fetch(base + path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body && JSON.stringify(body) });
+  const call = async (method, path, body, user) => {
+    const headers = body ? { 'content-type': 'application/json' } : {};
+    if (user) headers['x-user-email'] = user;
+    const res = await fetch(base + path, { method, headers, body: body && JSON.stringify(body) });
     const text = await res.text();
     let json; try { json = JSON.parse(text); } catch { json = text; }
     return { status: res.status, body: json, headers: res.headers };
@@ -207,4 +209,31 @@ test('schedule API: timeline, email preview and unsubscribe', () => withApp({}, 
   assert.match(preview.body.subject, /^Weekly — /);
   const bad = await call('GET', `/api/unsubscribe?query=${q.id}&email=a@x.com&token=nope`);
   assert.equal(bad.status, 400);
+}));
+
+test('identity: saved queries record their creator; only the author can edit a chart', () => withApp({}, {}, async ({ call }) => {
+  const q = (await call('POST', '/api/queries', { title: 'Mine', sql: 'select 1' }, 'ana@example.com')).body;
+  assert.equal(q.createdBy, 'ana@example.com');
+  const denied = await call('PUT', `/api/queries/${q.id}`, { chart: { kind: 'bar', x: 'a', y: ['b'] } }, 'bo@example.com');
+  assert.equal(denied.status, 403);
+  assert.match(denied.body.error.message, /only editable by the author/);
+  const ok = await call('PUT', `/api/queries/${q.id}`, { chart: { kind: 'bar', x: 'a', y: ['b'] } }, 'ana@example.com');
+  assert.equal(ok.status, 200);
+  // teammates can still open and edit the SQL of shared queries
+  assert.equal((await call('PUT', `/api/queries/${q.id}`, { sql: 'select 2' }, 'bo@example.com')).status, 200);
+  assert.equal((await call('GET', '/api/config', undefined, 'bo@example.com')).body.user, 'bo@example.com');
+}));
+
+test('identity: schedule creator is subscribed and recorded; only the author edits a metric group', () => withApp({}, {}, async ({ call }) => {
+  const q = (await call('POST', '/api/queries', { title: 'S', sql: 'select 1' }, 'ana@example.com')).body;
+  const s = (await call('PUT', `/api/queries/${q.id}/schedule`, { frequency: 'daily', subscribers: 'team@example.com' }, 'ana@example.com')).body;
+  assert.deepEqual(s.schedule.subscribers, ['ana@example.com', 'team@example.com']);
+  assert.equal(s.schedule.createdBy, 'ana@example.com');
+  const g = (await call('POST', '/api/metric-groups', { name: 'Ana metrics' }, 'ana@example.com')).body;
+  assert.equal(g.createdBy, 'ana@example.com');
+  assert.equal((await call('PUT', `/api/metric-groups/${g.id}`, { name: 'x' }, 'bo@example.com')).status, 403);
+  assert.equal((await call('POST', `/api/metric-groups/${g.id}/queries`, { queryId: q.id }, 'bo@example.com')).status, 403);
+  assert.equal((await call('DELETE', `/api/metric-groups/${g.id}`, undefined, 'bo@example.com')).status, 403);
+  assert.equal((await call('POST', `/api/metric-groups/${g.id}/queries`, { queryId: q.id }, 'ana@example.com')).status, 201);
+  assert.equal((await call('DELETE', `/api/metric-groups/${g.id}`, undefined, 'ana@example.com')).status, 204);
 }));

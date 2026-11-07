@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, runToCompletion } from './api.js';
+import { api, runToCompletion, getUser, setUser } from './api.js';
 import { SqlEditor } from './components/SqlEditor.jsx';
 import { ResultsTable } from './components/ResultsTable.jsx';
 import { ResultsChart, fitChart } from './components/ResultsChart.jsx';
@@ -36,6 +36,7 @@ const sameChart = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? nu
 
 export default function App() {
   const [config, setConfig] = useState(null);
+  const [user, setUserState] = useState(getUser);
   const [view, setView] = useState(location.hash.startsWith('#/metrics') ? 'metrics' : 'editor');
   const [schema, setSchema] = useState(null);
   const [schemaError, setSchemaError] = useState(null);
@@ -75,7 +76,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    api.config().then(setConfig).catch(() => setConfig({ error: true }));
+    api.config().then(c => {
+      setConfig(c);
+      if (!getUser() && c.user) setUserState(c.user);
+    }).catch(() => setConfig({ error: true }));
     api.templates().then(setTemplates).catch(() => {});
     refreshSaved();
     refreshHistory();
@@ -106,6 +110,18 @@ export default function App() {
 
   // A saved chart reappears with its settings every time the query runs.
   useEffect(() => { setChart(query.chart ?? null); }, [query.id, query.chart]);
+
+  const changeUser = () => {
+    const email = window.prompt('Your email (used to show what you created and who can edit charts, schedules and metric groups)', user || '');
+    if (email === null) return;
+    const clean = email.trim().toLowerCase();
+    if (clean && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) return flash('That doesn’t look like an email address');
+    setUser(clean || null);
+    setUserState(clean || config?.user || null);
+    refreshSaved();
+  };
+  const savedEntry = saved.find(s => s.id === query.id);
+  const isQueryAuthor = !savedEntry?.createdBy || savedEntry.createdBy === user;
 
   const dirty = isDirty(query);
   const running = run && !run.done;
@@ -297,6 +313,10 @@ export default function App() {
             Data available through {formatFreshness(config.dataFreshness)}
           </div>
         )}
+        <button className="user-chip" onClick={changeUser} title="Change who you are in this workspace">
+          <span className="avatar" aria-hidden="true">{(user || '?')[0].toUpperCase()}</span>
+          {user || 'Set your email'}
+        </button>
         <div className="conn" title={config?.trinoServer}>
           <span className={`conn-dot ${config?.trinoVersion ? 'ok' : config ? 'down' : ''}`} />
           {config?.trinoVersion ? <>Trino {config.trinoVersion}</> : config ? 'Trino unreachable' : 'Connecting…'}
@@ -305,7 +325,7 @@ export default function App() {
 
       {view === 'metrics' ? (
         <div className="body metrics-body">
-          <MetricsView saved={saved} maxReports={config?.maxMetricReports} onOpenQuery={q => openQuery(fromSaved(q))} flash={flash} />
+          <MetricsView saved={saved} user={user} maxReports={config?.maxMetricReports} onOpenQuery={q => openQuery(fromSaved(q))} flash={flash} />
         </div>
       ) : (
         <div className="body">
@@ -318,6 +338,7 @@ export default function App() {
             schema={schema}
             schemaError={schemaError}
             currentId={query.id}
+            user={user}
             defaultCatalog={config?.catalog}
             defaultSchema={config?.schema}
             onNew={() => openQuery(emptyQuery())}
@@ -427,7 +448,8 @@ export default function App() {
                     ? <ResultsTable columns={run.columns} rows={run.rows} rowCount={run.rowCount} truncated={run.truncated} viewRows={config?.viewRows ?? 1000} />
                     : <ResultsChart
                       columns={run.columns} rows={run.rows} rowCount={run.rowCount} truncated={run.truncated} limit={chartLimit}
-                      config={chart} onChange={setChart} onSave={run.snapshotAt ? null : onSaveChart} canSave={Boolean(query.id)}
+                      config={chart} onChange={setChart} onSave={run.snapshotAt ? null : onSaveChart} canSave={Boolean(query.id) && isQueryAuthor}
+                      saveHint={!query.id ? 'Save the query first' : !isQueryAuthor ? 'Charts are only editable by the author of the query.' : 'Show this chart every time the query runs'}
                       savedState={query.chart && sameChart(fitChart(chart, run.columns), query.chart) ? 'saved' : 'unsaved'}
                     />
                 )}

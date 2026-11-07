@@ -6,7 +6,7 @@ import { QueryRunner, serializeRun, toCsv } from './runner.js';
 import { TEMPLATES } from './templates.js';
 import { DESCRIPTIONS, CATEGORIES } from './descriptions.js';
 import { heuristicTitle } from './assistant.js';
-import { MAX_METRIC_REPORTS } from './store.js';
+import { MAX_METRIC_REPORTS, isAuthor } from './store.js';
 
 /**
  * @param {object} deps
@@ -23,6 +23,13 @@ export const CHART_ROW_LIMIT = 10000;
 export function createApp({ client, store, config, assistant = null, scheduler = null }) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+  // Lightweight identity, as in a team workspace: the browser sends the person's email.
+  // It is not authentication; put the app behind your SSO/proxy for that.
+  app.use((req, _res, next) => {
+    const h = String(req.get('x-user-email') || '').trim().toLowerCase();
+    req.user = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(h) ? h.slice(0, 200) : (config.userEmail || null);
+    next();
+  });
 
   const runner = new QueryRunner(client, {
     maxRows: config.maxRows,
@@ -48,7 +55,7 @@ export function createApp({ client, store, config, assistant = null, scheduler =
     res.json({ ok: !info.starting, trino: info.nodeVersion?.version ?? null });
   }));
 
-  app.get('/api/config', wrap(async (_req, res) => {
+  app.get('/api/config', wrap(async (req, res) => {
     let version = null;
     try { version = (await client.info()).nodeVersion?.version ?? null; } catch { /* trino down */ }
     res.json({
@@ -62,6 +69,7 @@ export function createApp({ client, store, config, assistant = null, scheduler =
       maxMetricReports: MAX_METRIC_REPORTS,
       allowWrites: config.allowWrites,
       userEmail: config.userEmail ?? null,
+      user: req.user,
       emailDelivery: Boolean(config.emailDelivery),
       assistant: Boolean(assistant),
       scheduling: Boolean(scheduler),
@@ -208,9 +216,14 @@ export function createApp({ client, store, config, assistant = null, scheduler =
   });
   app.post('/api/queries', (req, res) => {
     const body = req.body || {};
-    res.status(201).json(store.createSaved({ ...body, assistantKey: chatKey(body.assistantKey) }));
+    res.status(201).json(store.createSaved({ ...body, assistantKey: chatKey(body.assistantKey), createdBy: req.user }));
   });
   app.put('/api/queries/:id', (req, res) => {
+    const existing = store.getSaved(req.params.id);
+    if (existing && 'chart' in (req.body || {}) && !isAuthor(existing, req.user)) {
+      // "Charts are only editable by the author of the query."
+      return res.status(403).json({ error: { message: 'Charts are only editable by the author of the query.' } });
+    }
     const q = store.updateSaved(req.params.id, req.body || {});
     if (!q) return res.status(404).json({ error: { message: 'Query not found' } });
     res.json(view(q));
@@ -225,7 +238,7 @@ export function createApp({ client, store, config, assistant = null, scheduler =
   app.put('/api/queries/:id/schedule', needScheduler, (req, res) => {
     let q;
     try {
-      q = scheduler.setSchedule(req.params.id, req.body || {}, { creator: config.userEmail });
+      q = scheduler.setSchedule(req.params.id, req.body || {}, { creator: req.user });
     } catch (e) {
       return res.status(400).json({ error: { message: e.message } });
     }
@@ -272,7 +285,14 @@ export function createApp({ client, store, config, assistant = null, scheduler =
   // ---- Metric groups ---------------------------------------------------------
   const fail = (res, e) => res.status(e.status || 400).json({ error: { message: e.message } });
   app.get('/api/metric-groups', (_req, res) => res.json(store.listMetricGroups()));
-  app.post('/api/metric-groups', (req, res) => res.status(201).json(store.createMetricGroup(req.body?.name)));
+  app.post('/api/metric-groups', (req, res) => res.status(201).json(store.createMetricGroup(req.body?.name, req.user)));
+  // "Only the author of the metric group can edit or delete the metric group."
+  app.use('/api/metric-groups/:id', (req, res, next) => {
+    if (req.method === 'GET') return next();
+    const g = store.getMetricGroup(req.params.id);
+    if (g && !isAuthor(g, req.user)) return res.status(403).json({ error: { message: 'Only the author of the metric group can edit or delete it.' } });
+    next();
+  });
   app.put('/api/metric-groups/:id', (req, res) => {
     const g = store.renameMetricGroup(req.params.id, req.body?.name);
     if (!g) return res.status(404).json({ error: { message: 'Metric group not found' } });

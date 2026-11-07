@@ -39,9 +39,9 @@ export class Store {
     return this.data.saved.find(q => q.id === id);
   }
 
-  createSaved({ title, sql, description = '', chart = null, assistantKey = null }) {
+  createSaved({ title, sql, description = '', chart = null, assistantKey = null, createdBy = null }) {
     const now = new Date().toISOString();
-    const q = { id: crypto.randomUUID(), title: title || 'Untitled query', sql: sql || '', description, chart: validChart(chart), createdAt: now, updatedAt: now };
+    const q = { id: crypto.randomUUID(), title: title || 'Untitled query', sql: sql || '', description, chart: validChart(chart), createdBy, createdAt: now, updatedAt: now };
     this.data.saved.push(q);
     // A draft's assistant conversation follows it when it is saved.
     if (assistantKey && this.data.assistant[assistantKey]) {
@@ -112,8 +112,12 @@ export class Store {
     return this.data.metricGroups.reduce((n, g) => n + g.queryIds.length, 0);
   }
 
-  createMetricGroup(name) {
-    const g = { id: crypto.randomUUID(), name: String(name || '').trim() || 'Untitled group', queryIds: [], createdAt: new Date().toISOString() };
+  getMetricGroup(id) {
+    return this.data.metricGroups.find(x => x.id === id);
+  }
+
+  createMetricGroup(name, createdBy = null) {
+    const g = { id: crypto.randomUUID(), name: String(name || '').trim() || 'Untitled group', queryIds: [], createdBy, createdAt: new Date().toISOString() };
     this.data.metricGroups.push(g);
     this.flush();
     return g;
@@ -155,6 +159,9 @@ export class Store {
     return g;
   }
 }
+
+/** Records made before identities existed (no createdBy) stay editable by anyone. */
+export const isAuthor = (obj, user) => !obj?.createdBy || obj.createdBy === user;
 
 /** Saved chart settings: { kind: 'line'|'bar', x, y: [], groupBy } by column name. */
 export function validChart(c) {

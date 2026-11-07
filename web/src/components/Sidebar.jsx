@@ -23,7 +23,7 @@ function Icon({ name }) {
 export { Icon };
 
 export function Sidebar({
-  tab, onTab, saved, templates, history, schema, schemaError, currentId,
+  tab, onTab, saved, templates, history, schema, schemaError, currentId, user,
   onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onInsert, onPreviewTable, onRefreshSchema, defaultCatalog, defaultSchema,
   onCopySaved, onDeleteSaved,
 }) {
@@ -34,7 +34,7 @@ export function Sidebar({
         <button role="tab" aria-selected={tab === 'schema'} className={tab === 'schema' ? 'active' : ''} onClick={() => onTab('schema')}>Schema</button>
       </div>
       {tab === 'queries'
-        ? <QueriesPanel {...{ saved, templates, history, currentId, onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onCopySaved, onDeleteSaved }} />
+        ? <QueriesPanel {...{ saved, templates, history, currentId, user, onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onCopySaved, onDeleteSaved }} />
         : <SchemaPanel {...{ schema, schemaError, onInsert, onPreviewTable, onRefreshSchema, defaultCatalog, defaultSchema }} />}
     </aside>
   );
@@ -74,7 +74,7 @@ function OverflowMenu({ label, items }) {
   );
 }
 
-function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onCopySaved, onDeleteSaved }) {
+function QueriesPanel({ saved, templates, history, currentId, user, onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onCopySaved, onDeleteSaved }) {
   const [filter, setFilter] = useState('');
   const f = filter.trim().toLowerCase();
   const match = (...s) => !f || s.some(x => (x || '').toLowerCase().includes(f));
@@ -90,6 +90,12 @@ function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved
   }, [templates, f]);
   const savedFiltered = saved.filter(q => match(q.title, q.sql));
   const scheduled = savedFiltered.filter(q => q.schedule);
+  // Records from before identities existed count as yours.
+  const ownedBy = by => !by || by === user;
+  const mine = savedFiltered.filter(q => ownedBy(q.createdBy));
+  const team = savedFiltered.filter(q => !ownedBy(q.createdBy));
+  const scheduledMine = scheduled.filter(q => ownedBy(q.schedule.createdBy));
+  const scheduledOthers = scheduled.filter(q => !ownedBy(q.schedule.createdBy));
   const historyFiltered = history.filter(h => match(h.sql)).slice(0, 30);
 
   return (
@@ -104,30 +110,39 @@ function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved
       <div className="side-scroll">
         <Section title="Saved" icon="doc" count={savedFiltered.length}>
           {savedFiltered.length === 0 && <div className="side-empty">{f ? 'No matches' : 'Queries you save appear here.'}</div>}
-          {savedFiltered.map(q => (
-            <div key={q.id} className={`side-item-row ${q.id === currentId ? 'current' : ''}`}>
-              <button className="side-item" onClick={() => onOpenSaved(q)}>
-                <span className="side-item-title">{q.title}</span>
-                <span className="side-item-meta">Edited {timeAgo(q.updatedAt)}</span>
-              </button>
-              <OverflowMenu label={`More actions for ${q.title}`} items={[
-                { label: 'Make a copy', onClick: () => onCopySaved(q) },
-                { label: 'Delete', danger: true, onClick: () => onDeleteSaved(q) },
-              ]} />
+          {[['Created by you', mine], ['Created by your team', team]].map(([label, list]) => list.length > 0 && (
+            <div key={label}>
+              <div className="template-cat">{label}</div>
+              {list.map(q => (
+                <div key={q.id} className={`side-item-row ${q.id === currentId ? 'current' : ''}`}>
+                  <button className="side-item" onClick={() => onOpenSaved(q)}>
+                    <span className="side-item-title">{q.title}</span>
+                    <span className="side-item-meta">{q.createdBy && q.createdBy !== user ? `${q.createdBy} · ` : ''}Edited {timeAgo(q.updatedAt)}</span>
+                  </button>
+                  <OverflowMenu label={`More actions for ${q.title}`} items={[
+                    { label: 'Make a copy', onClick: () => onCopySaved(q) },
+                    { label: 'Delete', danger: true, onClick: () => onDeleteSaved(q) },
+                  ]} />
+                </div>
+              ))}
             </div>
           ))}
         </Section>
         <Section title="Scheduled" icon="calendar" count={scheduled.length}>
           {scheduled.length === 0 && <div className="side-empty">Schedule a saved query to run it daily, weekly or monthly.</div>}
-          {scheduled.length > 0 && <div className="template-cat">Created by you</div>}
-          {scheduled.map(q => (
-            <button key={q.id} className={`side-item ${q.id === currentId ? 'current' : ''}`} onClick={() => onOpenSaved(q)}>
-              <span className="side-item-title">{q.title}</span>
-              <span className="side-item-meta">
-                {q.schedule.frequency[0].toUpperCase() + q.schedule.frequency.slice(1)}
-                {q.timeline?.nextRunAt && ` · next run ${new Date(q.timeline.nextRunAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })}`}
-              </span>
-            </button>
+          {[['Created by you', scheduledMine], ['Created by others', scheduledOthers]].map(([label, list]) => list.length > 0 && (
+            <div key={label}>
+              <div className="template-cat">{label}</div>
+              {list.map(q => (
+                <button key={q.id} className={`side-item ${q.id === currentId ? 'current' : ''}`} onClick={() => onOpenSaved(q)}>
+                  <span className="side-item-title">{q.title}</span>
+                  <span className="side-item-meta">
+                    {q.schedule.frequency[0].toUpperCase() + q.schedule.frequency.slice(1)}
+                    {q.timeline?.nextRunAt && ` · next run ${new Date(q.timeline.nextRunAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })}`}
+                  </span>
+                </button>
+              ))}
+            </div>
           ))}
         </Section>
         <Section title="Templates" icon="spark" count={groups.reduce((a, [, ts]) => a + ts.length, 0)}>
