@@ -1,0 +1,29 @@
+services:
+  trino:
+    image: trinodb/trino:476
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/v1/info"]
+      interval: 5s
+      retries: 30
+
+  app:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      TRINO_SERVER: http://trino:8080
+      TRINO_CATALOG: memory
+      TRINO_SCHEMA: billing
+      SCHEMA_BROWSER: memory.billing,tpch.tiny
+    volumes:
+      - app-data:/data
+    depends_on:
+      trino:
+        condition: service_started
+
+volumes:
+  app-data:
