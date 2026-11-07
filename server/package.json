@@ -9,6 +9,8 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "@anthropic-ai/sdk": "^1.6.0",
+    "express": "^5.1.0",
+    "zod": "^3.25.76"
   }
 }

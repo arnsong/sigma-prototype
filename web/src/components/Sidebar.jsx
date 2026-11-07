@@ -12,6 +12,7 @@ function Icon({ name }) {
     spark: 'M8 2v3M8 11v3M2 8h3M11 8h3M4 4l2 2M10 10l2 2M12 4l-2 2M6 10l-2 2',
     refresh: 'M13 8a5 5 0 1 1-1.5-3.5M13 3v3h-3',
     play: 'M5 3l8 5-8 5z',
+    calendar: 'M2.5 4h11v9.5h-11zM2.5 7h11M5.5 2.5v3M10.5 2.5v3',
   };
   return (
     <svg className={`icon icon-${name}`} width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -68,6 +69,7 @@ function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templates, f]);
   const savedFiltered = saved.filter(q => match(q.title, q.sql));
+  const scheduled = savedFiltered.filter(q => q.schedule);
   const historyFiltered = history.filter(h => match(h.sql)).slice(0, 30);
 
   return (
@@ -76,7 +78,7 @@ function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved
         <button className="btn btn-primary btn-block" onClick={onNew}><Icon name="plus" /> New query</button>
         <div className="search">
           <Icon name="search" />
-          <input placeholder="Search queries" value={filter} onChange={e => setFilter(e.target.value)} aria-label="Search queries" />
+          <input placeholder="Search queries and templates" value={filter} onChange={e => setFilter(e.target.value)} aria-label="Search queries and templates" />
         </div>
       </div>
       <div className="side-scroll">
@@ -86,6 +88,17 @@ function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved
             <button key={q.id} className={`side-item ${q.id === currentId ? 'current' : ''}`} onClick={() => onOpenSaved(q)}>
               <span className="side-item-title">{q.title}</span>
               <span className="side-item-meta">Edited {timeAgo(q.updatedAt)}</span>
+            </button>
+          ))}
+        </Section>
+        <Section title="Scheduled" icon="calendar" count={scheduled.length}>
+          {scheduled.length === 0 && <div className="side-empty">Schedule a saved query to run it daily, weekly or monthly.</div>}
+          {scheduled.map(q => (
+            <button key={q.id} className={`side-item ${q.id === currentId ? 'current' : ''}`} onClick={() => onOpenSaved(q)}>
+              <span className="side-item-title">{q.title}</span>
+              <span className="side-item-meta">
+                {q.schedule.frequency[0].toUpperCase() + q.schedule.frequency.slice(1)} at {String(q.schedule.hour).padStart(2, '0')}:00 UTC
+              </span>
             </button>
           ))}
         </Section>
@@ -119,6 +132,9 @@ function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved
   );
 }
 
+const CATEGORY_ORDER = ['Core', 'Billing'];
+const categoryRank = c => (c ? (CATEGORY_ORDER.indexOf(c) + 1 || CATEGORY_ORDER.length + 1) : CATEGORY_ORDER.length + 2);
+
 function SchemaPanel({ schema, schemaError, onInsert, onPreviewTable, onRefreshSchema, defaultCatalog, defaultSchema }) {
   const [filter, setFilter] = useState('');
   const [open, setOpen] = useState({});
@@ -146,16 +162,21 @@ function SchemaPanel({ schema, schemaError, onInsert, onPreviewTable, onRefreshS
               const cols = tableHit ? t.columns : t.columns.filter(c => c.name.toLowerCase().includes(f));
               return tableHit || cols.length ? { t, cols, hit: !tableHit } : null;
             })
-            .filter(Boolean);
+            .filter(Boolean)
+            .sort((a, b) => categoryRank(a.t.category) - categoryRank(b.t.category) || a.t.name.localeCompare(b.t.name));
           if (f && tables.length === 0) return null;
           return (
             <Section key={`${s.catalog}.${s.schema}`} title={`${s.catalog}.${s.schema}`} icon="doc" count={tables.length}>
               {s.error && <div className="side-error">{s.error}</div>}
-              {tables.map(({ t, cols, hit }) => {
+              {tables.map(({ t, cols, hit }, idx) => {
                 const key = `${s.catalog}.${s.schema}.${t.name}`;
+                const heading = t.category && t.category !== tables[idx - 1]?.t.category
+                  ? <div className="template-cat schema-cat">{t.category}</div>
+                  : null;
                 const isOpen = open[key] ?? hit;
                 return (
                   <div key={key} className="schema-table">
+                    {heading}
                     <div className="schema-table-row">
                       <button className="schema-table-name" onClick={() => setOpen(o => ({ ...o, [key]: !isOpen }))} aria-expanded={isOpen} title={t.description || t.name}>
                         <span className={`caret ${isOpen ? 'open' : ''}`}><Icon name="chevron" /></span>

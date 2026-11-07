@@ -4,11 +4,15 @@ import { createApp } from '../src/app.js';
 import { Store } from '../src/store.js';
 import { TrinoClient } from '../src/trino.js';
 import { startFakeTrino } from './fake-trino.js';
+import { Scheduler } from '../src/scheduler.js';
 
 async function withApp(fakeOpts, config, fn) {
   const fake = await startFakeTrino(fakeOpts);
   const client = new TrinoClient({ server: fake.url, user: 'tester', catalog: 'memory', schema: 'billing' });
-  const app = createApp({ client, store: new Store(null), config: { maxRows: 1000, schemas: [], ...config } });
+  const store = new Store(null);
+  const scheduler = new Scheduler({ client, store, dataDir: null, maxRows: 1000, log: () => {} });
+  const assistant = config.assistant ?? null;
+  const app = createApp({ client, store, scheduler, assistant, config: { maxRows: 1000, schemas: [], ...config } });
   const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, path, body) => {
@@ -104,3 +108,37 @@ test('saved query CRUD', () => withApp({}, {}, async ({ call }) => {
   assert.equal((await call('DELETE', `/api/queries/${id}`)).status, 204);
   assert.equal((await call('GET', `/api/queries/${id}`)).status, 404);
 }));
+
+test('schedule a saved query, run it now and download the snapshot', () => withApp({}, {}, async ({ call }) => {
+  const q = (await call('POST', '/api/queries', { title: 'Weekly', sql: 'select 1' })).body;
+  const bad = await call('PUT', `/api/queries/${q.id}/schedule`, { frequency: 'yearly' });
+  assert.equal(bad.status, 400);
+  const sched = await call('PUT', `/api/queries/${q.id}/schedule`, { frequency: 'weekly', hour: 8 });
+  assert.equal(sched.body.schedule.frequency, 'weekly');
+  assert.ok(sched.body.schedule.nextRunAt);
+  const snap = await call('POST', `/api/queries/${q.id}/snapshots`);
+  assert.equal(snap.status, 201);
+  assert.equal(snap.body.rowCount, 6);
+  const list = await call('GET', `/api/queries/${q.id}/snapshots`);
+  assert.equal(list.body.length, 1);
+  const full = await call('GET', `/api/snapshots/${snap.body.id}`);
+  assert.equal(full.body.rows.length, 6);
+  const csv = await call('GET', `/api/snapshots/${snap.body.id}/csv`);
+  assert.equal(csv.body.split('\r\n')[0], 'n,s');
+  const cleared = await call('DELETE', `/api/queries/${q.id}/schedule`);
+  assert.equal(cleared.body.schedule, undefined);
+}));
+
+test('assistant endpoint: 503 when unconfigured, answers when configured', async () => {
+  await withApp({}, {}, async ({ call }) => {
+    const r = await call('POST', '/api/assistant', { question: 'hi' });
+    assert.equal(r.status, 503);
+    assert.equal((await call('GET', '/api/config')).body.assistant, false);
+  });
+  const assistant = { ask: async ({ question }) => ({ sql: 'SELECT 1', explanation: `answer to ${question}` }) };
+  await withApp({}, { assistant }, async ({ call }) => {
+    assert.equal((await call('POST', '/api/assistant', { question: '' })).status, 400);
+    const r = await call('POST', '/api/assistant', { question: 'q?' });
+    assert.deepEqual(r.body, { sql: 'SELECT 1', explanation: 'answer to q?' });
+  });
+});

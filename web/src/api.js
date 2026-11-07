@@ -28,5 +28,12 @@ export const api = {
   getRun: (id, { wait = 0, offset = 0, limit = 0 } = {}) =>
     req('GET', `/api/runs/${id}?wait=${wait}&offset=${offset}&limit=${limit}`),
   cancelRun: id => req('POST', `/api/runs/${id}/cancel`),
+  ask: (question, sql, error) => req('POST', '/api/assistant', { question, sql, error }),
+  setSchedule: (id, schedule) => req('PUT', `/api/queries/${id}/schedule`, schedule),
+  clearSchedule: id => req('DELETE', `/api/queries/${id}/schedule`),
+  runSnapshot: id => req('POST', `/api/queries/${id}/snapshots`),
+  listSnapshots: id => req('GET', `/api/queries/${id}/snapshots`),
+  getSnapshot: id => req('GET', `/api/snapshots/${id}`),
+  snapshotCsvUrl: id => `/api/snapshots/${id}/csv`,
   csvUrl: (id, filename) => `/api/runs/${id}/csv?filename=${encodeURIComponent(filename)}`,
 };

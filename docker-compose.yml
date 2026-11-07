@@ -19,6 +19,8 @@ services:
       TRINO_CATALOG: memory
       TRINO_SCHEMA: billing
       SCHEMA_BROWSER: memory.billing,tpch.tiny
+      # Enables the natural-language SQL assistant when set in your shell.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - app-data:/data
     depends_on:

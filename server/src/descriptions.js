@@ -1,4 +1,11 @@
 // Human-readable docs for the sample billing dataset, shown in the schema browser.
+
+// Schema browser groups tables into product areas, like Sigma's schema tab.
+export const CATEGORIES = {
+  balance_transactions: 'Core', charges: 'Core', customers: 'Core', disputes: 'Core', refunds: 'Core',
+  invoices: 'Billing', prices: 'Billing', products: 'Billing', subscriptions: 'Billing',
+};
+
 export const DESCRIPTIONS = {
   customers: {
     _table: 'People or businesses you bill.',

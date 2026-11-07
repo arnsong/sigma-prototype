@@ -8,10 +8,10 @@ const HISTORY_LIMIT = 200;
 export class Store {
   constructor(file) {
     this.file = file;
-    this.data = { saved: [], history: [] };
+    this.data = { saved: [], history: [], snapshots: [] };
     if (file && fs.existsSync(file)) {
       try {
-        this.data = { saved: [], history: [], ...JSON.parse(fs.readFileSync(file, 'utf8')) };
+        this.data = { saved: [], history: [], snapshots: [], ...JSON.parse(fs.readFileSync(file, 'utf8')) };
       } catch (e) {
         console.warn(`Could not read ${file}, starting empty: ${e.message}`);
       }
@@ -54,6 +54,7 @@ export class Store {
   deleteSaved(id) {
     const before = this.data.saved.length;
     this.data.saved = this.data.saved.filter(q => q.id !== id);
+    this.data.snapshots = this.data.snapshots.filter(s => s.queryId !== id);
     this.flush();
     return this.data.saved.length !== before;
   }

@@ -4,6 +4,9 @@ import { TrinoClient } from './trino.js';
 import { Store } from './store.js';
 import { createApp } from './app.js';
 import { seed } from './seed.js';
+import { Assistant, assistantEnabled } from './assistant.js';
+import { Scheduler } from './scheduler.js';
+import { loadSchema } from './app.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -22,6 +25,10 @@ const config = {
   seed: env.SEED !== 'false',
   seedTarget: `${env.SEED_CATALOG || catalog}.${env.SEED_SCHEMA || schema}`,
   dataDir: env.DATA_DIR || path.resolve(here, '../../data'),
+  // Query whose single value is shown as "Data available up to ..." in the UI.
+  freshnessQuery: env.FRESHNESS_QUERY ?? (env.SEED !== 'false'
+    ? `SELECT max(created) FROM ${env.SEED_CATALOG || catalog}.${env.SEED_SCHEMA || schema}.balance_transactions`
+    : ''),
   webDist: env.WEB_DIST || path.resolve(here, '../../web/dist'),
 };
 
@@ -34,10 +41,26 @@ const client = new TrinoClient({
 });
 
 const store = new Store(path.join(config.dataDir, 'store.json'));
-const app = createApp({ client, store, config });
+
+const assistant = assistantEnabled(env)
+  ? new Assistant({
+    catalog,
+    schema,
+    model: env.ASSISTANT_MODEL,
+    getSchema: () => loadSchema(client, config.schemas, config.seedTarget),
+  })
+  : null;
+
+const scheduler = env.SCHEDULER === 'false'
+  ? null
+  : new Scheduler({ client, store, dataDir: config.dataDir, maxRows: config.maxRows, allowWrites: config.allowWrites });
+scheduler?.start();
+
+const app = createApp({ client, store, config, assistant, scheduler });
 
 app.listen(config.port, () => {
   console.log(`sigma-prototype API on http://localhost:${config.port} (Trino: ${config.trinoServer}, default ${catalog}.${schema})`);
+  console.log(`assistant: ${assistant ? `enabled (${assistant.model})` : 'disabled (set ANTHROPIC_API_KEY to enable)'}; scheduler: ${scheduler ? 'on' : 'off'}`);
 });
 
 if (config.seed) {

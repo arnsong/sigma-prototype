@@ -35,6 +35,17 @@ You get a schema browser, a SQL editor with autocomplete, a results grid, quick 
   - Save as… and Delete are available.
 - **Templates** for common billing analyses: MRR, gross volume, net revenue, churn, failed payments, disputes and more.
 - **History** of recent runs.
+- **Assistant**: type a question in plain English and get Trino SQL written against your live schema. When a query fails, **Fix with assistant** rewrites it using Trino's error. This needs `ANTHROPIC_API_KEY` on the server.
+  - It runs on Claude (`claude-opus-5-5` by default; override with `ASSISTANT_MODEL`).
+  - Server-side refusal fallbacks are on (`fallbacks: "default"`).
+  - Generated SQL goes through the same read-only guard as every other query.
+- **Scheduled queries**: run a saved query daily, weekly (Mondays) or monthly (1st) at a UTC hour you choose.
+  - Each run's results are kept (last 20 per query) and can be viewed or downloaded as CSV.
+  - An optional webhook gets a JSON POST after each run.
+  - **Run now** triggers a run on demand.
+- **Share**: copies a link to the saved query (it saves first if needed).
+- **Data freshness**: the top bar shows "Data available up to …", the newest timestamp in the data (`FRESHNESS_QUERY`).
+- **Schema categories**: tables in the sample schema are grouped into **Core** and **Billing**.
 - **Read-only by default**: only `SELECT / WITH / SHOW / DESCRIBE / EXPLAIN` statements are accepted, one statement per run. Set `ALLOW_WRITES=true` to lift this.
 - **Sample dataset**: on startup the server seeds `memory.billing` with deterministic, realistic billing data. Tables:
   - `customers`, `products`, `prices`, `subscriptions`
@@ -118,6 +129,10 @@ These are environment variables for the server:
 | `ALLOW_WRITES` | `false` | Allow non-read-only statements |
 | `SEED` | `true` | Seed the sample dataset on startup (skipped if it already exists) |
 | `SEED_CATALOG` / `SEED_SCHEMA` | the default catalog/schema | Where to seed |
+| `ANTHROPIC_API_KEY` | – | Enables the assistant (`ASSISTANT_ENABLED=true` also works with other Anthropic SDK credentials) |
+| `ASSISTANT_MODEL` | `claude-opus-5-5` | Claude model used by the assistant |
+| `SCHEDULER` | `true` | Set `false` to disable scheduled queries |
+| `FRESHNESS_QUERY` | `SELECT max(created) FROM <seed>.balance_transactions` | Single-value query shown as "Data available up to …"; empty to hide |
 | `PORT` | `3001` | HTTP port |
 | `DATA_DIR` | `./data` | Where saved queries and history are stored |
 
@@ -136,3 +151,27 @@ To point the app at your own data, set `TRINO_CATALOG`, `TRINO_SCHEMA` and `SCHE
 | `GET /api/runs/:id/csv` | Download the results as CSV |
 | `GET /api/history` | Recent runs |
 | `GET/POST/PUT/DELETE /api/queries[/:id]` | Saved queries |
+| `PUT/DELETE /api/queries/:id/schedule` `{frequency, hour, webhookUrl?}` | Set or remove a schedule |
+| `POST /api/queries/:id/snapshots` | Run a saved query now and record the result |
+| `GET /api/queries/:id/snapshots` | Past scheduled runs |
+| `GET /api/snapshots/:id[/csv]` | One scheduled run's rows, or its CSV |
+| `POST /api/assistant` `{question, sql?, error?}` | Natural language to `{sql, explanation}` |
+
+## How this maps to Stripe Sigma
+
+The Sigma reference comes from my knowledge of its Dashboard UI. Stripe's docs couldn't be fetched from the environment this was built in, so check it against the live product.
+
+| Sigma | Here |
+|---|---|
+| Sidebar with queries (templates, saved, history) and a schema tab | Sidebar **Queries** tab (Saved, Scheduled, Templates, History) and **Schema** tab |
+| Schema grouped by product area, with column descriptions | Core / Billing groups for the sample data; descriptions on hover; Insert / Preview |
+| SQL editor with Run | CodeMirror editor; Run with ⌘/Ctrl+Enter |
+| Assistant that writes SQL from a question | Assistant bar above the editor, plus **Fix with assistant** |
+| Results table with CSV download | Results grid, sort, paging, **Download CSV** |
+| Charts | **Chart** tab (line/bar) |
+| Saved and shared queries | Saved queries, **Share** link |
+| Scheduled queries | **Schedule** dialog, past runs, webhook |
+| Data freshness notice | "Data available up to …" in the top bar |
+| Queries Stripe's data warehouse | Queries Trino, so any catalog Trino can reach |
+
+Not included: Stripe branding, multi-user accounts and permissions (saved queries are shared by everyone using the server), and email delivery of scheduled results (a webhook takes its place).

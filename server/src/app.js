@@ -4,15 +4,17 @@ import path from 'node:path';
 import { prepareQuery } from './sql.js';
 import { QueryRunner, serializeRun, toCsv } from './runner.js';
 import { TEMPLATES } from './templates.js';
-import { DESCRIPTIONS } from './descriptions.js';
+import { DESCRIPTIONS, CATEGORIES } from './descriptions.js';
 
 /**
  * @param {object} deps
  * @param {import('./trino.js').TrinoClient} deps.client
  * @param {import('./store.js').Store} deps.store
  * @param {object} deps.config
+ * @param {import('./assistant.js').Assistant|null} [deps.assistant]
+ * @param {import('./scheduler.js').Scheduler|null} [deps.scheduler]
  */
-export function createApp({ client, store, config }) {
+export function createApp({ client, store, config, assistant = null, scheduler = null }) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
@@ -50,16 +52,52 @@ export function createApp({ client, store, config }) {
       schema: config.schema,
       maxRows: config.maxRows,
       allowWrites: config.allowWrites,
+      assistant: Boolean(assistant),
+      scheduling: Boolean(scheduler),
+      dataFreshness: await freshness(),
     });
   }));
 
+  // "Data available up to ..." indicator: the newest timestamp in the data, cached for a minute.
+  let freshCache = null;
+  async function freshness() {
+    if (!config.freshnessQuery) return null;
+    if (freshCache && Date.now() - freshCache.at < 60_000) return freshCache.value;
+    let value = null;
+    try {
+      const { rows } = await client.query(config.freshnessQuery, { maxRows: 1 });
+      value = rows[0]?.[0] ?? null;
+    } catch { /* table may not exist yet (still seeding) */ }
+    if (value) freshCache = { at: Date.now(), value };
+    return value;
+  }
+
   // ---- Schema browser -------------------------------------------------------
   let schemaCache = null;
-  app.get('/api/schema', wrap(async (req, res) => {
-    if (!schemaCache || req.query.refresh || Date.now() - schemaCache.at > 60_000) {
+  const getSchema = async (refresh = false) => {
+    if (!schemaCache || refresh || Date.now() - schemaCache.at > 60_000) {
       schemaCache = { at: Date.now(), value: await loadSchema(client, config.schemas, config.seedTarget) };
     }
-    res.json(schemaCache.value);
+    return schemaCache.value;
+  };
+  app.get('/api/schema', wrap(async (req, res) => res.json(await getSchema(Boolean(req.query.refresh)))));
+
+  // ---- Assistant (natural language -> SQL) ---------------------------------
+  app.post('/api/assistant', wrap(async (req, res) => {
+    if (!assistant) {
+      return res.status(503).json({ error: { message: 'The assistant is not configured. Set ANTHROPIC_API_KEY on the server to enable it.' } });
+    }
+    const question = String(req.body?.question || '').trim();
+    if (!question) return res.status(400).json({ error: { message: 'Ask a question first.' } });
+    try {
+      res.json(await assistant.ask({
+        question: question.slice(0, 4000),
+        currentSql: String(req.body?.sql || '').slice(0, 20000),
+        error: String(req.body?.error || '').slice(0, 4000),
+      }));
+    } catch (e) {
+      res.status(e.status && e.status < 500 ? 400 : 502).json({ error: { message: `Assistant error: ${e.message}` } });
+    }
   }));
 
   app.get('/api/templates', (_req, res) => res.json(TEMPLATES));
@@ -123,6 +161,43 @@ export function createApp({ client, store, config }) {
     res.status(204).end();
   });
 
+  // ---- Scheduled queries ----------------------------------------------------
+  const needScheduler = (_req, res, next) => (scheduler ? next() : res.status(503).json({ error: { message: 'Scheduling is disabled' } }));
+  app.put('/api/queries/:id/schedule', needScheduler, (req, res) => {
+    let q;
+    try {
+      q = scheduler.setSchedule(req.params.id, req.body || {});
+    } catch (e) {
+      return res.status(400).json({ error: { message: e.message } });
+    }
+    if (!q) return res.status(404).json({ error: { message: 'Query not found' } });
+    res.json(q);
+  });
+  app.delete('/api/queries/:id/schedule', needScheduler, (req, res) => {
+    const q = scheduler.clearSchedule(req.params.id);
+    if (!q) return res.status(404).json({ error: { message: 'Query not found' } });
+    res.json(q);
+  });
+  app.post('/api/queries/:id/snapshots', needScheduler, wrap(async (req, res) => {
+    const snap = await scheduler.runNow(req.params.id);
+    if (!snap) return res.status(404).json({ error: { message: 'Query not found' } });
+    res.status(201).json(snap);
+  }));
+  app.get('/api/queries/:id/snapshots', needScheduler, (req, res) => res.json(scheduler.listSnapshots(req.params.id)));
+  app.get('/api/snapshots/:id', needScheduler, (req, res) => {
+    const snap = scheduler.getSnapshot(req.params.id);
+    if (!snap) return res.status(404).json({ error: { message: 'Snapshot not found' } });
+    res.json(snap);
+  });
+  app.get('/api/snapshots/:id/csv', needScheduler, (req, res) => {
+    const snap = scheduler.getSnapshot(req.params.id);
+    if (!snap) return res.status(404).json({ error: { message: 'Snapshot not found' } });
+    const name = `${snap.title}_${snap.ranAt.slice(0, 16)}`.replace(/[^\w.-]+/g, '_').slice(0, 100);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}.csv"`);
+    res.send(toCsv(snap.columns, snap.rows));
+  });
+
   // ---- Static frontend ------------------------------------------------------
   if (config.webDist && fs.existsSync(config.webDist)) {
     app.use(express.static(config.webDist));
@@ -170,7 +245,7 @@ export async function loadSchema(client, targets, describedSchema = null) {
       const tables = bySchema.get(s);
       const docs = `${catalog}.${s}` === describedSchema ? DESCRIPTIONS[t] : undefined;
       if (!tables.has(t)) {
-        tables.set(t, { name: t, description: docs?._table ?? null, columns: [] });
+        tables.set(t, { name: t, description: docs?._table ?? null, category: docs ? CATEGORIES[t] ?? null : null, columns: [] });
       }
       tables.get(t).columns.push({ name: c, type: ty, description: docs?.[c] ?? null });
     }

@@ -4,6 +4,8 @@ import { SqlEditor } from './components/SqlEditor.jsx';
 import { ResultsTable } from './components/ResultsTable.jsx';
 import { ResultsChart } from './components/ResultsChart.jsx';
 import { Sidebar, Icon } from './components/Sidebar.jsx';
+import { AssistantBar } from './components/AssistantBar.jsx';
+import { ScheduleDialog } from './components/ScheduleDialog.jsx';
 import { formatBytes, formatDuration, formatInt } from './format.js';
 
 const DRAFT_KEY = 'query-studio.draft';
@@ -21,6 +23,8 @@ function saveDraft(q) {
   try { localStorage.setItem(DRAFT_KEY, JSON.stringify(q)); } catch { /* ignore */ }
 }
 
+const fromSaved = q => ({ id: q.id, title: q.title, sql: q.sql, savedTitle: q.title, savedSql: q.sql, schedule: q.schedule ?? null });
+
 const isDirty = q => (q.id ? q.sql !== q.savedSql || q.title !== q.savedTitle : q.sql.trim() !== '');
 
 export default function App() {
@@ -37,6 +41,8 @@ export default function App() {
   const [resultTab, setResultTab] = useState('table');
   const [toast, setToast] = useState(null);
   const [editorPct, setEditorPct] = useState(42);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [fixing, setFixing] = useState(false);
   const editor = useRef(null);
   const pollToken = useRef(0);
   const runOffsetLine = useRef(0);
@@ -67,7 +73,7 @@ export default function App() {
   useEffect(() => {
     const m = location.hash.match(/^#\/queries\/([\w-]+)/);
     if (m) {
-      api.getQuery(m[1]).then(q => setQuery({ id: q.id, title: q.title, sql: q.sql, savedTitle: q.title, savedSql: q.sql }))
+      api.getQuery(m[1]).then(q => setQuery(fromSaved(q)))
         .catch(() => { window.history.replaceState(null, '', location.pathname); });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -150,11 +156,13 @@ export default function App() {
       const q = query.id
         ? await api.updateQuery(query.id, { title, sql: query.sql })
         : await api.createQuery({ title, sql: query.sql });
-      setQuery({ id: q.id, title: q.title, sql: q.sql, savedTitle: q.title, savedSql: q.sql });
+      setQuery(fromSaved(q));
       refreshSaved();
       flash('Query saved');
+      return q;
     } catch (e) {
       flash(`Save failed: ${e.message}`);
+      return null;
     }
   };
 
@@ -162,7 +170,7 @@ export default function App() {
     const title = window.prompt('Name for the copy', `${query.title} (copy)`);
     if (!title) return;
     const q = await api.createQuery({ title, sql: query.sql });
-    setQuery({ id: q.id, title: q.title, sql: q.sql, savedTitle: q.title, savedSql: q.sql });
+    setQuery(fromSaved(q));
     refreshSaved();
     flash('Saved a copy');
   };
@@ -173,6 +181,48 @@ export default function App() {
     setQuery({ ...EMPTY, sql: query.sql, title: query.title });
     refreshSaved();
     flash('Query deleted');
+  };
+
+  const onShare = async () => {
+    let id = query.id;
+    if (!id || dirty) id = (await onSave())?.id;
+    if (!id) return;
+    const url = `${location.origin}${location.pathname}#/queries/${id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      flash('Link copied — anyone with access to this workspace can open it');
+    } catch {
+      window.prompt('Copy this link', url);
+    }
+  };
+
+  const onViewSnapshot = async id => {
+    const snap = await api.getSnapshot(id);
+    pollToken.current++;
+    setScheduleOpen(false);
+    setSubmitError(null);
+    setRun({
+      id: snap.id, done: true, state: snap.state, columns: snap.columns, rows: snap.rows, rowCount: snap.rowCount,
+      truncated: snap.truncated, elapsedMs: snap.elapsedMs, stats: {}, error: snap.error ? { message: snap.error } : null,
+      snapshotAt: snap.ranAt, csvHref: api.snapshotCsvUrl(snap.id),
+    });
+  };
+
+  const onFixWithAssistant = async () => {
+    setFixing(true);
+    try {
+      const r = await api.ask('Fix this query so it runs.', query.sql, run?.error?.message || submitError || '');
+      if (r.sql) {
+        setQuery(q => ({ ...q, sql: r.sql }));
+        flash('Assistant updated the query — review it, then run');
+      } else {
+        flash(r.explanation);
+      }
+    } catch (e) {
+      flash(e.message);
+    } finally {
+      setFixing(false);
+    }
   };
 
   // ---- Editor/results splitter ----------------------------------------------
@@ -197,6 +247,11 @@ export default function App() {
           </span>
           <span className="brand-name">Query Studio</span>
         </div>
+        {config?.dataFreshness && (
+          <div className="freshness" title="Newest record available to query">
+            Data available up to {formatFreshness(config.dataFreshness)}
+          </div>
+        )}
         <div className="conn" title={config?.trinoServer}>
           <span className={`conn-dot ${config?.trinoVersion ? 'ok' : config ? 'down' : ''}`} />
           {config?.trinoVersion ? <>Trino {config.trinoVersion}</> : config ? 'Trino unreachable' : 'Connecting…'}
@@ -217,7 +272,7 @@ export default function App() {
           defaultCatalog={config?.catalog}
           defaultSchema={config?.schema}
           onNew={() => openQuery({ ...EMPTY })}
-          onOpenSaved={q => openQuery({ id: q.id, title: q.title, sql: q.sql, savedTitle: q.title, savedSql: q.sql })}
+          onOpenSaved={q => openQuery(fromSaved(q))}
           onOpenTemplate={t => openQuery({ ...EMPTY, title: t.title, sql: t.sql })}
           onOpenHistory={h => openQuery({ ...EMPTY, title: 'Query from history', sql: h.sql })}
           onInsert={text => editor.current?.insert(text)}
@@ -239,11 +294,27 @@ export default function App() {
             <div className="query-actions">
               {query.id && <button className="btn btn-ghost" onClick={onDelete}>Delete</button>}
               {query.id && <button className="btn btn-ghost" onClick={onSaveAs}>Save as…</button>}
+              <button className="btn btn-ghost" onClick={onShare} title="Copy a link to this query">Share</button>
+              {config?.scheduling && (
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => (query.id ? setScheduleOpen(true) : flash('Save the query before scheduling it'))}
+                  title="Run this query on a schedule"
+                >
+                  {query.schedule ? `Scheduled · ${query.schedule.frequency}` : 'Schedule'}
+                </button>
+              )}
               <button className="btn btn-secondary" onClick={onSave} disabled={query.id && !dirty} title="Save (⌘/Ctrl + S)">
                 {query.id ? 'Save' : 'Save query'}
               </button>
             </div>
           </div>
+
+          <AssistantBar
+            enabled={Boolean(config?.assistant)}
+            getSql={() => query.sql}
+            onSql={sql => setQuery(q => ({ ...q, sql }))}
+          />
 
           <div className="editor-pane" style={{ height: `${editorPct}%` }}>
             <SqlEditor
@@ -293,7 +364,12 @@ export default function App() {
                 <div className="error-box" role="alert">
                   <strong>{run.error?.errorName ? `${run.error.errorName.replace(/_/g, ' ').toLowerCase()}` : 'Query failed'}</strong>
                   <pre>{run.error?.message}</pre>
-                  {errorLine && <button className="link" onClick={() => editor.current?.goTo(errorLine, run.error.column)}>Go to line {errorLine}</button>}
+                  <div className="error-actions">
+                    {errorLine && <button className="link" onClick={() => editor.current?.goTo(errorLine, run.error.column)}>Go to line {errorLine}</button>}
+                    {config?.assistant && !run.snapshotAt && (
+                      <button className="btn btn-secondary btn-sm" onClick={onFixWithAssistant} disabled={fixing}>{fixing ? 'Fixing…' : 'Fix with assistant'}</button>
+                    )}
+                  </div>
                 </div>
               )}
               {!submitError && run?.done && run.state === 'CANCELED' && (
@@ -308,6 +384,14 @@ export default function App() {
           </section>
         </main>
       </div>
+      {scheduleOpen && query.id && (
+        <ScheduleDialog
+          query={query}
+          onClose={() => setScheduleOpen(false)}
+          onChanged={q => { setQuery(cur => ({ ...cur, schedule: q.schedule ?? null })); refreshSaved(); flash(q.schedule ? 'Schedule saved' : 'Schedule removed'); }}
+          onViewSnapshot={onViewSnapshot}
+        />
+      )}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );
@@ -323,13 +407,20 @@ function ResultsHeader({ run, resultTab, setResultTab, title, maxRows }) {
       </div>
       {finished && (
         <div className="results-meta">
+          {run.snapshotAt && <span className="snapshot-tag">Scheduled run · {new Date(run.snapshotAt).toLocaleString()}</span>}
           <span><strong>{formatInt(run.rowCount)}</strong> {run.rowCount === 1 ? 'row' : 'rows'}{run.truncated ? ` (limited to first ${formatInt(maxRows ?? run.rowCount)})` : ''}</span>
           <span>{formatDuration(run.elapsedMs)}</span>
           {run.stats?.processedBytes > 0 && <span>{formatBytes(run.stats.processedBytes)} scanned</span>}
           {run.trinoQueryId && <span className="mono muted" title="Trino query ID">{run.trinoQueryId}</span>}
-          <a className="btn btn-secondary btn-sm" href={api.csvUrl(run.id, title)} download>Download CSV</a>
+          <a className="btn btn-secondary btn-sm" href={run.csvHref ?? api.csvUrl(run.id, title)} download>Download CSV</a>
         </div>
       )}
     </div>
   );
+}
+
+function formatFreshness(v) {
+  const d = new Date(String(v).replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(v)) ? '' : 'Z'));
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
 }
