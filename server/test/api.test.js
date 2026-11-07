@@ -139,6 +139,72 @@ test('assistant endpoint: 503 when unconfigured, answers when configured', async
   await withApp({}, { assistant }, async ({ call }) => {
     assert.equal((await call('POST', '/api/assistant', { question: '' })).status, 400);
     const r = await call('POST', '/api/assistant', { question: 'q?' });
-    assert.deepEqual(r.body, { sql: 'SELECT 1', explanation: 'answer to q?' });
+    assert.equal(r.body.sql, 'SELECT 1');
+    assert.equal(r.body.explanation, 'answer to q?');
+    assert.equal(r.body.mode, 'generate');
   });
 });
+
+test('chat history is kept per query, follows a draft when saved, and records feedback', async () => {
+  let n = 0;
+  const assistant = { ask: async ({ question, mode, history }) => ({ sql: `SELECT ${++n}`, explanation: `${mode}:${question}:${history.length}` }) };
+  await withApp({}, { assistant }, async ({ call }) => {
+    const a = await call('POST', '/api/assistant', { question: 'first', mode: 'generate', key: 'draft-abc' });
+    assert.equal(a.body.explanation, 'generate:first:0');
+    const b = await call('POST', '/api/assistant', { question: 'second', mode: 'edit', key: 'draft-abc' });
+    assert.equal(b.body.explanation, 'edit:second:1', 'edit sees earlier turns');
+    const q = (await call('POST', '/api/queries', { title: 'T', sql: 'SELECT 2', assistantKey: 'draft-abc' })).body;
+    const hist = await call('GET', `/api/assistant/history?key=${q.id}`);
+    assert.deepEqual(hist.body.map(e => e.prompt), ['first', 'second']);
+    assert.equal((await call('GET', '/api/assistant/history?key=draft-abc')).body.length, 0);
+    const fb = await call('POST', '/api/assistant/feedback', { key: q.id, id: b.body.id, helpful: false, details: 'wrong table' });
+    assert.deepEqual([fb.body.feedback.helpful, fb.body.feedback.details], [false, 'wrong table']);
+  });
+});
+
+test('titles are generated on save (heuristic without the assistant)', () => withApp({}, {}, async ({ call }) => {
+  const r = await call('POST', '/api/title', { sql: 'select * from refunds join charges on 1=1' });
+  assert.equal(r.body.title, 'Refunds and charges query');
+}));
+
+test('saved chart settings persist with the query', () => withApp({}, {}, async ({ call }) => {
+  const q = (await call('POST', '/api/queries', { title: 'C', sql: 'select 1', chart: { kind: 'bar', x: 'day', y: ['amount'], groupBy: 'currency' } })).body;
+  assert.deepEqual(q.chart, { kind: 'bar', x: 'day', y: ['amount'], groupBy: 'currency' });
+  const u = (await call('PUT', `/api/queries/${q.id}`, { chart: { kind: 'nonsense', x: 'day', y: 'oops' } })).body;
+  assert.deepEqual(u.chart, { kind: 'line', x: 'day', y: [], groupBy: null });
+}));
+
+test('CSV includes all results even when the view was capped', () => withApp({ pages: 4, rowsPerPage: 5 }, { maxRows: 7 }, async ({ call }) => {
+  const start = await call('POST', '/api/runs', { sql: 'select 1' });
+  const run = await waitDone(call, start.body.id);
+  assert.equal(run.truncated, true);
+  const csv = await call('GET', `/api/runs/${run.id}/csv`);
+  const lines = csv.body.trim().split('\r\n');
+  assert.equal(lines[0], 'n,s');
+  assert.equal(lines.length, 1 + 20, 'header + every row from a fresh, uncapped run');
+}));
+
+test('metric groups hold up to 20 reports', () => withApp({}, {}, async ({ call }) => {
+  const g = (await call('POST', '/api/metric-groups', { name: 'Key' })).body;
+  const ids = [];
+  for (let i = 0; i < 21; i++) ids.push((await call('POST', '/api/queries', { title: `Q${i}`, sql: 'select 1' })).body.id);
+  for (let i = 0; i < 20; i++) assert.equal((await call('POST', `/api/metric-groups/${g.id}/queries`, { queryId: ids[i] })).status, 201);
+  const over = await call('POST', `/api/metric-groups/${g.id}/queries`, { queryId: ids[20] });
+  assert.equal(over.status, 400);
+  assert.match(over.body.error.message, /up to 20/);
+  assert.equal((await call('DELETE', `/api/metric-groups/${g.id}/queries/${ids[0]}`)).body.queryIds.length, 19);
+  await call('DELETE', `/api/queries/${ids[1]}`);
+  assert.equal((await call('GET', '/api/metric-groups')).body[0].queryIds.length, 18, 'deleting a query removes it from groups');
+  assert.equal((await call('DELETE', `/api/metric-groups/${g.id}`)).status, 204);
+}));
+
+test('schedule API: timeline, email preview and unsubscribe', () => withApp({}, {}, async ({ call }) => {
+  const q = (await call('POST', '/api/queries', { title: 'Weekly', sql: 'select 1' })).body;
+  const s = (await call('PUT', `/api/queries/${q.id}/schedule`, { frequency: 'weekly', subscribers: 'a@x.com' })).body;
+  assert.equal(new Date(s.timeline.nextRunAt).getUTCDay(), 1, 'weekly runs on Monday 00:00 UTC');
+  assert.ok(s.timeline.dataPeriod.start < s.timeline.dataPeriod.end);
+  const preview = await call('GET', `/api/queries/${q.id}/schedule/email-preview?format=json`);
+  assert.match(preview.body.subject, /^Weekly — /);
+  const bad = await call('GET', `/api/unsubscribe?query=${q.id}&email=a@x.com&token=nope`);
+  assert.equal(bad.status, 400);
+}));

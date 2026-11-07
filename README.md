@@ -1,66 +1,59 @@
 # sigma-prototype: Query Studio
 
-A SQL analysis workspace modeled on the Stripe Sigma workflow, with Trino as the query engine.
+A SQL analysis workspace that follows Stripe Sigma's documented UI and behaviour, backed by Trino. Sigma itself runs on Trino (v414), so the engine matches too.
 
-You get a schema browser, a SQL editor with autocomplete, a results grid, quick charts, saved queries, templates and run history. The UI uses its own name and styling and carries no Stripe branding.
+The app has its own name and styling and carries no Stripe branding. Every Sigma behaviour it implements is listed, with its source in Stripe's docs and how it was verified, in **[docs/sigma-parity.md](docs/sigma-parity.md)**.
 
 ![layout](docs/screenshot.png)
 
-## Features
+## What's in it
 
-- **SQL editor** (CodeMirror 6) with Trino keywords and functions, plus autocomplete for tables and columns taken from the live schema.
-  - Run with **⌘/Ctrl + Enter**. If text is selected, only the selection runs.
-  - Save with **⌘/Ctrl + S**.
-- **Schema browser** that reads `information_schema` from the catalogs and schemas you configure.
-  - Search across tables and columns.
-  - Columns show their types and descriptions.
-  - Hover a table for **Insert** (adds the table name to the editor) or **Preview** (runs `SELECT * … LIMIT 100`).
-- **Async execution** that follows the Trino client protocol.
-  - While a query runs you see its queued/running state, progress, elapsed time and rows scanned.
-  - **Cancel** kills the query in Trino.
-  - Results are capped at `MAX_ROWS`. Once the cap is reached, the query is stopped so it doesn't stream everything.
-- **Results grid**:
-  - sticky headers that show column types
-  - click a header to sort
-  - numbers are right-aligned and NULLs are shown explicitly
-  - 100 rows per page
-  - **CSV download**
-- **Chart view**:
-  - line or bar chart
-  - choose the X axis and the series
-  - hover tooltip
-  - light and dark themes
-- **Saved queries** that persist on the server.
-  - The URL links to the open query (`#/queries/<id>`).
-  - Save as… and Delete are available.
-- **Templates** for common billing analyses: MRR, gross volume, net revenue, churn, failed payments, disputes and more.
-- **History** of recent runs.
-- **Assistant**: type a question in plain English and get Trino SQL written against your live schema. When a query fails, **Fix with assistant** rewrites it using Trino's error. This needs `ANTHROPIC_API_KEY` on the server.
-  - It runs on Claude (`claude-opus-5-5` by default; override with `ASSISTANT_MODEL`).
-  - Server-side refusal fallbacks are on (`fallbacks: "default"`).
-  - Generated SQL goes through the same read-only guard as every other query.
-- **Scheduled queries**: run a saved query daily, weekly (Mondays) or monthly (1st) at a UTC hour you choose.
-  - Each run's results are kept (last 20 per query) and can be viewed or downloaded as CSV.
-  - An optional webhook gets a JSON POST after each run.
-  - **Run now** triggers a run on demand.
-- **Share**: copies a link to the saved query (it saves first if needed).
-- **Data freshness**: the top bar shows "Data available up to …", the newest timestamp in the data (`FRESHNESS_QUERY`).
-- **Schema categories**: tables in the sample schema are grouped into **Core** and **Billing**.
-- **Read-only by default**: only `SELECT / WITH / SHOW / DESCRIBE / EXPLAIN` statements are accepted, one statement per run. Set `ALLOW_WRITES=true` to lift this.
-- **Sample dataset**: on startup the server seeds `memory.billing` with deterministic, realistic billing data. Tables:
-  - `customers`, `products`, `prices`, `subscriptions`
-  - `invoices`, `charges`, `refunds`, `disputes`, `balance_transactions`
+- **Navigator** to the left of the editor:
+  - **Queries** tab: Saved, Scheduled, Templates and History. Each saved query has a ⋯ menu with **Make a copy** and **Delete**.
+  - **Schema** tab: tables grouped by product area, with column types and descriptions, search, **Insert** and **Preview**.
+- **Editor** (CodeMirror 6) with Trino syntax and autocomplete from the live schema.
+  - **Run** (⌘/Ctrl+Enter) runs the selection if there is one, otherwise the whole query.
+  - Errors show the line number and position, with a link that jumps there.
+- **Assistant** (Claude):
+  - **Generate** writes a new query; **Edit** changes the SQL in the editor. The mode switches to Edit automatically when the editor has content.
+  - A suggestion is loaded into the editor with a summary and run straight away.
+  - Each query keeps its chat history, opened from the editor's top-right button, with **View SQL** and **View in editor**.
+  - "Was this response helpful?" feedback appears between the editor and the results.
+  - **Fix with assistant** is offered when a query fails.
+- **Results**:
+  - Up to 1,000 rows are shown. **Download CSV** gets all rows; if the run was capped, the query is re-run without the cap.
+  - Click a header to sort; drag a header's edge to resize.
+- **Charts** for results under 10,000 rows:
+  - Line or bar, with X-axis, Y-axis and **Group by** any column.
+  - **Save chart** stores the settings with the query, and the chart reappears on every run.
+- **Save**: an untitled query gets an auto-generated, editable title. **Share** copies the query's unique URL.
+- **Scheduled queries**:
+  - Daily, weekly or monthly, running when the period's data closes (00:00 UTC; weeks end Sunday).
+  - Each schedule has a unique name and a timeline showing the next run and the data period it covers.
+  - Results go to email subscribers (creator included by default), with **Preview email** and unsubscribe links.
+  - A webhook can receive a `sigma.scheduled_query_run.created` event in Sigma's payload shape.
+  - Past runs can be viewed or downloaded.
+- **Metrics**: metric groups of up to 20 reports. Each report shows its saved chart, or its row count if it has no chart.
+- **Data available through …**: the `data_load_time` equivalent, shown in the top bar.
+- **Read-only**: one SELECT / WITH / SHOW / DESCRIBE / EXPLAIN statement per run.
+- **Sample data**: a small billing schema seeded into Trino's memory catalog at `memory.billing`. More schemas can be added later with `SCHEMA_BROWSER`.
+  - Core: `balance_transactions`, `charges`, `customers`, `disputes`, `refunds`
+  - Billing: `invoices`, `prices`, `products`, `subscriptions`
+
+Deliberate differences from Sigma are listed at the end of the [parity checklist](docs/sigma-parity.md#deliberately-different). The main ones: no Stripe branding, no user accounts (everyone on the server is one team), and a small sample schema instead of Stripe's full one.
 
 ## Architecture
 
 ```
-browser (React + Vite)  ──/api──▶  Node/Express server  ──HTTP /v1/statement──▶  Trino coordinator
-                                    │  query runner (poll, cap, cancel)
-                                    │  schema introspection (information_schema)
-                                    └─ data/store.json (saved queries + history)
+browser (React + Vite)  ──/api──▶  Node/Express server  ──HTTP /v1/statement──▶  Trino
+                                    │  query runner (poll, 100k-row cap, cancel, full-CSV re-run)
+                                    │  schema browser (information_schema)
+                                    │  assistant (Claude, structured output)
+                                    │  scheduler (period runs, email via SMTP, webhooks)
+                                    └─ data/store.json + data/snapshots/
 ```
 
-The server talks to Trino over its REST client protocol directly (`server/src/trino.js`), so it needs no driver. The browser never connects to Trino. Every query goes through the server, which validates it, runs it as the configured user and holds the result rows so the UI can page through them and export them.
+The server talks to Trino over its REST client protocol directly (`server/src/trino.js`). The browser never connects to Trino: every query goes through the server, which validates it and runs it as the configured user.
 
 ## Quick start (Docker)
 
@@ -68,19 +61,15 @@ The server talks to Trino over its REST client protocol directly (`server/src/tr
 docker compose up --build
 ```
 
-Then open http://localhost:3001. Trino's own UI is at http://localhost:8080.
+Open http://localhost:3001. To turn on the assistant, export `ANTHROPIC_API_KEY` before running the command.
 
 ## Local development
 
-You need Node 22+ and a Trino server. The sample data uses the `memory` catalog, and the schema browser also lists `tpch.tiny`. To get both, use the catalog files in `trino/catalog/`.
-
-To start only Trino:
+You need Node 22+ and a Trino server with the `memory` catalog (see `trino/catalog/`).
 
 ```bash
 docker compose up trino
 ```
-
-In another terminal:
 
 ```bash
 npm install
@@ -90,88 +79,84 @@ npm install
 npm run dev
 ```
 
-`npm run dev` starts the API on :3001 and Vite on http://localhost:5173, which proxies `/api` to the API.
-
-For a production-style run:
-
-```bash
-npm run build && npm start
-```
-
-This serves the built UI from the API server on :3001.
+The API runs on :3001 and Vite on http://localhost:5173, which proxies `/api` to the API. For a production-style run, use `npm run build && npm start`.
 
 ### Tests
+
+Unit and API tests, using a fake Trino:
 
 ```bash
 npm test
 ```
 
-This runs the unit tests and the API tests against a fake Trino.
+The same, plus seeding a real Trino and running every template against it:
 
 ```bash
 TRINO_SERVER=http://localhost:8080 npm test
 ```
 
-This also seeds a real Trino and runs every template against it.
+The browser check of every documented Sigma behaviour in [docs/sigma-parity.md](docs/sigma-parity.md) starts a stub of the Claude API, so no key is needed. Start the stub:
+
+```bash
+node scripts/fake-anthropic.cjs 4010 &
+```
+
+Start the app with the assistant pointed at the stub:
+
+```bash
+npm run build && ANTHROPIC_BASE_URL=http://127.0.0.1:4010 ANTHROPIC_API_KEY=test USER_EMAIL=me@example.com DATA_DIR=$(mktemp -d) npm start &
+```
+
+Run the check:
+
+```bash
+node scripts/e2e-parity.cjs http://localhost:3001
+```
 
 ## Configuration
-
-These are environment variables for the server:
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `TRINO_SERVER` | `http://localhost:8080` | Trino coordinator URL |
 | `TRINO_USER` | `sigma` | User sent as `X-Trino-User` |
-| `TRINO_PASSWORD` | – | Enables HTTP basic auth (Trino requires HTTPS for this) |
-| `TRINO_CATALOG` / `TRINO_SCHEMA` | `memory` / `billing` | Default catalog/schema, so unqualified table names resolve |
-| `SCHEMA_BROWSER` | `memory.billing,tpch.tiny` | Comma-separated `catalog.schema` (or `catalog`) list to show in the schema browser |
-| `MAX_ROWS` | `10000` | Maximum rows kept per run |
+| `TRINO_PASSWORD` | – | HTTP basic auth (Trino requires HTTPS for this) |
+| `TRINO_CATALOG` / `TRINO_SCHEMA` | `memory` / `billing` | Default catalog/schema; unqualified table names resolve here |
+| `SCHEMA_BROWSER` | the default `catalog.schema` | Comma-separated `catalog.schema` (or `catalog`) list shown in the schema browser |
+| `MAX_ROWS` | `100000` | Rows kept per run (the table shows 1,000; CSV gets everything) |
 | `ALLOW_WRITES` | `false` | Allow non-read-only statements |
-| `SEED` | `true` | Seed the sample dataset on startup (skipped if it already exists) |
+| `SEED` | `true` | Seed the sample dataset on startup (skipped if present) |
 | `SEED_CATALOG` / `SEED_SCHEMA` | the default catalog/schema | Where to seed |
-| `ANTHROPIC_API_KEY` | – | Enables the assistant (`ASSISTANT_ENABLED=true` also works with other Anthropic SDK credentials) |
-| `ASSISTANT_MODEL` | `claude-opus-5-5` | Claude model used by the assistant |
-| `SCHEDULER` | `true` | Set `false` to disable scheduled queries |
-| `FRESHNESS_QUERY` | `SELECT max(created) FROM <seed>.balance_transactions` | Single-value query shown as "Data available up to …"; empty to hide |
+| `FRESHNESS_QUERY` | `SELECT max(created) FROM <seed>.balance_transactions` | Single value shown as "Data available through …"; empty to hide |
+| `ANTHROPIC_API_KEY` | – | Turns on the assistant and model-written titles |
+| `ASSISTANT_MODEL` | `claude-opus-5-5` | Claude model for the assistant |
+| `SCHEDULER` | `true` | `false` turns off scheduled queries |
+| `SMTP_URL` | – | Sends scheduled results by email, e.g. `smtps://user:pass@smtp.example.com` |
+| `MAIL_FROM` | `Query Studio <reports@localhost>` | From address for those emails |
+| `PUBLIC_URL` | `http://localhost:$PORT` | Base URL for CSV and unsubscribe links in emails and webhooks |
+| `USER_EMAIL` | – | Address auto-subscribed as a schedule's creator (no user accounts yet) |
 | `PORT` | `3001` | HTTP port |
-| `DATA_DIR` | `./data` | Where saved queries and history are stored |
+| `DATA_DIR` | `./data` | Where saved queries, history and scheduled results are stored |
 
-To point the app at your own data, set `TRINO_CATALOG`, `TRINO_SCHEMA` and `SCHEMA_BROWSER` to the catalogs Trino already serves (Hive, Iceberg, Postgres, …). Set `SEED=false` if that catalog isn't writable.
+To point the app at your own data, set `TRINO_CATALOG`, `TRINO_SCHEMA` and `SCHEMA_BROWSER` to catalogs your Trino already serves, and set `SEED=false`.
 
 ## HTTP API
 
 | Method & path | Description |
 |---|---|
-| `GET /api/config` | Trino version, default catalog/schema, limits |
+| `GET /api/config` | Trino version, defaults, limits, enabled features |
 | `GET /api/schema[?refresh=1]` | Tables and columns for the configured schemas |
 | `GET /api/templates` | Starter queries |
-| `POST /api/runs` `{sql}` | Start a query and return the run |
-| `GET /api/runs/:id?wait=ms&offset=&limit=` | Run status (long-polls up to 5s with `wait`) and a page of rows |
+| `POST /api/runs` `{sql}` | Start a query |
+| `GET /api/runs/:id?wait=ms&offset=&limit=` | Status (long-polls up to 5s) and a page of rows |
 | `POST /api/runs/:id/cancel` | Cancel the run and the Trino query |
-| `GET /api/runs/:id/csv` | Download the results as CSV |
+| `GET /api/runs/:id/csv` | All results as CSV |
 | `GET /api/history` | Recent runs |
-| `GET/POST/PUT/DELETE /api/queries[/:id]` | Saved queries |
-| `PUT/DELETE /api/queries/:id/schedule` `{frequency, hour, webhookUrl?}` | Set or remove a schedule |
-| `POST /api/queries/:id/snapshots` | Run a saved query now and record the result |
-| `GET /api/queries/:id/snapshots` | Past scheduled runs |
-| `GET /api/snapshots/:id[/csv]` | One scheduled run's rows, or its CSV |
-| `POST /api/assistant` `{question, sql?, error?}` | Natural language to `{sql, explanation}` |
-
-## How this maps to Stripe Sigma
-
-The Sigma reference comes from my knowledge of its Dashboard UI. Stripe's docs couldn't be fetched from the environment this was built in, so check it against the live product.
-
-| Sigma | Here |
-|---|---|
-| Sidebar with queries (templates, saved, history) and a schema tab | Sidebar **Queries** tab (Saved, Scheduled, Templates, History) and **Schema** tab |
-| Schema grouped by product area, with column descriptions | Core / Billing groups for the sample data; descriptions on hover; Insert / Preview |
-| SQL editor with Run | CodeMirror editor; Run with ⌘/Ctrl+Enter |
-| Assistant that writes SQL from a question | Assistant bar above the editor, plus **Fix with assistant** |
-| Results table with CSV download | Results grid, sort, paging, **Download CSV** |
-| Charts | **Chart** tab (line/bar) |
-| Saved and shared queries | Saved queries, **Share** link |
-| Scheduled queries | **Schedule** dialog, past runs, webhook |
-| Data freshness notice | "Data available up to …" in the top bar |
-| Queries Stripe's data warehouse | Queries Trino, so any catalog Trino can reach |
-
-Not included: Stripe branding, multi-user accounts and permissions (saved queries are shared by everyone using the server), and email delivery of scheduled results (a webhook takes its place).
+| `GET/POST/PUT/DELETE /api/queries[/:id]` | Saved queries (`{title, sql, chart}`) |
+| `POST /api/title` `{sql}` | Generate a title for a query |
+| `POST /api/assistant` `{question, mode, sql?, error?, key}` | Generate or edit SQL; recorded in the chat history for `key` |
+| `GET /api/assistant/history?key=` · `POST /api/assistant/feedback` | Chat history for a query; "Was this helpful?" |
+| `PUT/DELETE /api/queries/:id/schedule` `{title, frequency, subscribers, webhookUrl}` | Schedule a query, or remove its schedule |
+| `GET /api/queries/:id/schedule/email-preview` | The email subscribers receive |
+| `POST/GET /api/queries/:id/snapshots` · `GET /api/snapshots/:id[/csv]` | Run now; past scheduled results |
+| `GET /api/unsubscribe?query=&email=&token=` | Signed unsubscribe link from emails |
+| `GET/POST/PUT/DELETE /api/metric-groups[/:id]` · `POST/DELETE /api/metric-groups/:id/queries[/:queryId]` | Metric groups |

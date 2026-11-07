@@ -1,36 +1,52 @@
 import { useMemo, useState, useEffect } from 'react';
 import { compareCells, formatCell, formatInt, isNumericType } from '../format.js';
 
-const PAGE_SIZE = 100;
-
-export function ResultsTable({ columns, rows }) {
+/**
+ * Sigma-style results table: up to `viewRows` rows (1,000), sortable by clicking a
+ * header, resizable by dragging a header's right edge. CSV download has everything.
+ */
+export function ResultsTable({ columns, rows, rowCount, viewRows = 1000, truncated }) {
   const [sort, setSort] = useState(null); // { index, dir: 1 | -1 }
-  const [page, setPage] = useState(0);
+  const [widths, setWidths] = useState({});
 
-  useEffect(() => { setSort(null); setPage(0); }, [columns, rows]);
+  useEffect(() => { setSort(null); setWidths({}); }, [columns]);
 
-  const sorted = useMemo(() => {
-    if (!sort) return rows;
+  const visible = useMemo(() => {
+    const base = rows.slice(0, viewRows);
+    if (!sort) return base;
     const numeric = isNumericType(columns[sort.index]?.type);
-    return [...rows].sort((a, b) => sort.dir * compareCells(a[sort.index], b[sort.index], numeric));
-  }, [rows, columns, sort]);
+    return [...base].sort((a, b) => sort.dir * compareCells(a[sort.index], b[sort.index], numeric));
+  }, [rows, columns, sort, viewRows]);
 
-  const pages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const visible = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const toggleSort = i => setSort(s => (!s || s.index !== i ? { index: i, dir: 1 } : s.dir === 1 ? { index: i, dir: -1 } : null));
 
-  const toggleSort = i => {
-    setPage(0);
-    setSort(s => (!s || s.index !== i ? { index: i, dir: 1 } : s.dir === 1 ? { index: i, dir: -1 } : null));
+  const startResize = (e, i) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const th = e.currentTarget.parentElement;
+    const startX = e.clientX;
+    const startW = th.getBoundingClientRect().width;
+    const move = ev => setWidths(w => ({ ...w, [i]: Math.max(60, Math.round(startW + ev.clientX - startX)) }));
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
   };
 
   if (columns.length === 0) {
     return <div className="results-empty">The statement ran successfully and returned no columns.</div>;
   }
 
+  const total = rowCount ?? rows.length;
+  const hidden = total > viewRows || truncated;
+
   return (
     <div className="results-table-wrap">
       <div className="results-scroll">
-        <table className="results-table">
+        <table className="results-table" style={{ tableLayout: Object.keys(widths).length ? 'fixed' : 'auto' }}>
+          <colgroup>
+            <col style={{ width: 52 }} />
+            {columns.map((_, i) => <col key={i} style={widths[i] ? { width: widths[i] } : undefined} />)}
+          </colgroup>
           <thead>
             <tr>
               <th className="rownum" aria-label="Row number" />
@@ -45,6 +61,7 @@ export function ResultsTable({ columns, rows }) {
                   <span className="th-name">{c.name}</span>
                   <span className="th-type">{c.type}</span>
                   {sort?.index === i && <span className="th-sort">{sort.dir === 1 ? '▲' : '▼'}</span>}
+                  <span className="col-resizer" onPointerDown={e => startResize(e, i)} onClick={e => e.stopPropagation()} role="separator" aria-orientation="vertical" aria-label={`Resize ${c.name}`} />
                 </th>
               ))}
             </tr>
@@ -55,12 +72,11 @@ export function ResultsTable({ columns, rows }) {
             )}
             {visible.map((r, ri) => (
               <tr key={ri}>
-                <td className="rownum">{page * PAGE_SIZE + ri + 1}</td>
+                <td className="rownum">{ri + 1}</td>
                 {r.map((v, ci) => {
                   const text = formatCell(v);
-                  const numeric = isNumericType(columns[ci].type);
                   return (
-                    <td key={ci} className={numeric ? 'num' : ''} title={text ?? 'NULL'}>
+                    <td key={ci} className={isNumericType(columns[ci].type) ? 'num' : ''} title={text ?? 'NULL'}>
                       {text === null ? <span className="null">NULL</span> : text}
                     </td>
                   );
@@ -70,16 +86,9 @@ export function ResultsTable({ columns, rows }) {
           </tbody>
         </table>
       </div>
-      {pages > 1 && (
+      {hidden && (
         <div className="pager">
-          <span>
-            Rows {formatInt(page * PAGE_SIZE + 1)}–{formatInt(Math.min(sorted.length, (page + 1) * PAGE_SIZE))} of {formatInt(sorted.length)}
-          </span>
-          <button className="btn btn-ghost btn-sm" disabled={page === 0} onClick={() => setPage(0)} aria-label="First page">«</button>
-          <button className="btn btn-ghost btn-sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Previous</button>
-          <span className="pager-page">Page {page + 1} of {pages}</span>
-          <button className="btn btn-ghost btn-sm" disabled={page >= pages - 1} onClick={() => setPage(p => p + 1)}>Next</button>
-          <button className="btn btn-ghost btn-sm" disabled={page >= pages - 1} onClick={() => setPage(pages - 1)} aria-label="Last page">»</button>
+          <span>Showing the first {formatInt(Math.min(viewRows, rows.length))} of {formatInt(total)}{truncated ? '+' : ''} rows. Download CSV to get all results.</span>
         </div>
       )}
     </div>

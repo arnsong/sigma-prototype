@@ -5,6 +5,8 @@ import { prepareQuery } from './sql.js';
 import { QueryRunner, serializeRun, toCsv } from './runner.js';
 import { TEMPLATES } from './templates.js';
 import { DESCRIPTIONS, CATEGORIES } from './descriptions.js';
+import { heuristicTitle } from './assistant.js';
+import { MAX_METRIC_REPORTS } from './store.js';
 
 /**
  * @param {object} deps
@@ -14,6 +16,10 @@ import { DESCRIPTIONS, CATEGORIES } from './descriptions.js';
  * @param {import('./assistant.js').Assistant|null} [deps.assistant]
  * @param {import('./scheduler.js').Scheduler|null} [deps.scheduler]
  */
+// Sigma: "View a maximum of 1,000 results" and charts "for queries with fewer than 10,000 results".
+export const VIEW_ROWS = 1000;
+export const CHART_ROW_LIMIT = 10000;
+
 export function createApp({ client, store, config, assistant = null, scheduler = null }) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -51,7 +57,12 @@ export function createApp({ client, store, config, assistant = null, scheduler =
       catalog: config.catalog,
       schema: config.schema,
       maxRows: config.maxRows,
+      viewRows: VIEW_ROWS,
+      chartRowLimit: CHART_ROW_LIMIT,
+      maxMetricReports: MAX_METRIC_REPORTS,
       allowWrites: config.allowWrites,
+      userEmail: config.userEmail ?? null,
+      emailDelivery: Boolean(config.emailDelivery),
       assistant: Boolean(assistant),
       scheduling: Boolean(scheduler),
       dataFreshness: await freshness(),
@@ -89,15 +100,44 @@ export function createApp({ client, store, config, assistant = null, scheduler =
     }
     const question = String(req.body?.question || '').trim();
     if (!question) return res.status(400).json({ error: { message: 'Ask a question first.' } });
+    const mode = req.body?.mode === 'edit' ? 'edit' : 'generate';
+    const key = chatKey(req.body?.key);
     try {
-      res.json(await assistant.ask({
+      const answer = await assistant.ask({
         question: question.slice(0, 4000),
+        mode,
         currentSql: String(req.body?.sql || '').slice(0, 20000),
         error: String(req.body?.error || '').slice(0, 4000),
-      }));
+        history: key ? store.listChat(key) : [],
+      });
+      const entry = key ? store.addChat(key, { prompt: question, mode, ...answer }) : { id: null, prompt: question, mode, ...answer };
+      res.json(entry);
     } catch (e) {
       res.status(e.status && e.status < 500 ? 400 : 502).json({ error: { message: `Assistant error: ${e.message}` } });
     }
+  }));
+
+  // Chat history is kept per query "for the life of the query".
+  const chatKey = k => (typeof k === 'string' && /^[\w-]{1,64}$/.test(k) ? k : null);
+  app.get('/api/assistant/history', (req, res) => {
+    const key = chatKey(req.query.key);
+    res.json(key ? store.listChat(key) : []);
+  });
+  app.post('/api/assistant/feedback', (req, res) => {
+    const key = chatKey(req.body?.key);
+    const e = key && store.setChatFeedback(key, String(req.body?.id || ''), req.body || {});
+    if (!e) return res.status(404).json({ error: { message: 'Assistant response not found' } });
+    res.json(e);
+  });
+
+  // "Stripe automatically generates an editable title for your query."
+  app.post('/api/title', wrap(async (req, res) => {
+    const sql = String(req.body?.sql || '');
+    let title = null;
+    if (assistant) {
+      try { title = await assistant.title(sql); } catch { /* fall back */ }
+    }
+    res.json({ title: title || heuristicTitle(sql) });
   }));
 
   app.get('/api/templates', (_req, res) => res.json(TEMPLATES));
@@ -138,23 +178,42 @@ export function createApp({ client, store, config, assistant = null, scheduler =
     const name = String(req.query.filename || 'query_results').replace(/[^\w.-]+/g, '_').slice(0, 100);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${name}.csv"`);
-    res.send(toCsv(run.columns, run.rows));
+    if (!run.truncated) return res.send(toCsv(run.columns, run.rows));
+    // "The downloaded CSV includes all query results": stream a fresh run without the row cap.
+    streamCsv(run.sql, res).catch(e => { console.error('[csv]', e.message); res.end(); });
   });
+
+  async function streamCsv(sql, res) {
+    let header = false;
+    for await (const page of client.pages(sql)) {
+      if (page.error) { res.write(`\r\n# query failed: ${page.error.message}\r\n`); break; }
+      if (page.columns && !header) { res.write(toCsv(page.columns, [])); header = true; }
+      if (page.data?.length) {
+        const chunk = toCsv([], page.data).replace(/^\r\n/, '');
+        if (!res.write(chunk)) await new Promise(r => res.once('drain', r));
+      }
+    }
+    res.end();
+  }
 
   app.get('/api/history', (_req, res) => res.json(store.listHistory()));
 
   // ---- Saved queries --------------------------------------------------------
-  app.get('/api/queries', (_req, res) => res.json(store.listSaved()));
+  const view = q => (q.schedule && scheduler ? { ...q, timeline: scheduler.timeline(q.schedule) } : q);
+  app.get('/api/queries', (_req, res) => res.json(store.listSaved().map(view)));
   app.get('/api/queries/:id', (req, res) => {
     const q = store.getSaved(req.params.id);
     if (!q) return res.status(404).json({ error: { message: 'Query not found' } });
-    res.json(q);
+    res.json(view(q));
   });
-  app.post('/api/queries', (req, res) => res.status(201).json(store.createSaved(req.body || {})));
+  app.post('/api/queries', (req, res) => {
+    const body = req.body || {};
+    res.status(201).json(store.createSaved({ ...body, assistantKey: chatKey(body.assistantKey) }));
+  });
   app.put('/api/queries/:id', (req, res) => {
     const q = store.updateSaved(req.params.id, req.body || {});
     if (!q) return res.status(404).json({ error: { message: 'Query not found' } });
-    res.json(q);
+    res.json(view(q));
   });
   app.delete('/api/queries/:id', (req, res) => {
     if (!store.deleteSaved(req.params.id)) return res.status(404).json({ error: { message: 'Query not found' } });
@@ -166,12 +225,24 @@ export function createApp({ client, store, config, assistant = null, scheduler =
   app.put('/api/queries/:id/schedule', needScheduler, (req, res) => {
     let q;
     try {
-      q = scheduler.setSchedule(req.params.id, req.body || {});
+      q = scheduler.setSchedule(req.params.id, req.body || {}, { creator: config.userEmail });
     } catch (e) {
       return res.status(400).json({ error: { message: e.message } });
     }
     if (!q) return res.status(404).json({ error: { message: 'Query not found' } });
-    res.json(q);
+    res.json(view(q));
+  });
+  app.get('/api/queries/:id/schedule/email-preview', needScheduler, (req, res) => {
+    const email = scheduler.previewEmail(req.params.id);
+    if (!email) return res.status(404).json({ error: { message: 'Query not found' } });
+    if (req.query.format === 'json') return res.json(email);
+    res.type('html').send(email.html);
+  });
+  app.get('/api/unsubscribe', needScheduler, (req, res) => {
+    const ok = scheduler.unsubscribe(String(req.query.query || ''), String(req.query.email || ''), String(req.query.token || ''));
+    res.status(ok ? 200 : 400).type('html').send(ok
+      ? '<!doctype html><p style="font-family:sans-serif">You have been unsubscribed from this scheduled query.</p>'
+      : '<!doctype html><p style="font-family:sans-serif">This unsubscribe link is invalid or has already been used.</p>');
   });
   app.delete('/api/queries/:id/schedule', needScheduler, (req, res) => {
     const q = scheduler.clearSchedule(req.params.id);
@@ -196,6 +267,28 @@ export function createApp({ client, store, config, assistant = null, scheduler =
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${name}.csv"`);
     res.send(toCsv(snap.columns, snap.rows));
+  });
+
+  // ---- Metric groups ---------------------------------------------------------
+  const fail = (res, e) => res.status(e.status || 400).json({ error: { message: e.message } });
+  app.get('/api/metric-groups', (_req, res) => res.json(store.listMetricGroups()));
+  app.post('/api/metric-groups', (req, res) => res.status(201).json(store.createMetricGroup(req.body?.name)));
+  app.put('/api/metric-groups/:id', (req, res) => {
+    const g = store.renameMetricGroup(req.params.id, req.body?.name);
+    if (!g) return res.status(404).json({ error: { message: 'Metric group not found' } });
+    res.json(g);
+  });
+  app.delete('/api/metric-groups/:id', (req, res) => {
+    if (!store.deleteMetricGroup(req.params.id)) return res.status(404).json({ error: { message: 'Metric group not found' } });
+    res.status(204).end();
+  });
+  app.post('/api/metric-groups/:id/queries', (req, res) => {
+    try { res.status(201).json(store.addMetric(req.params.id, String(req.body?.queryId || ''))); } catch (e) { fail(res, e); }
+  });
+  app.delete('/api/metric-groups/:id/queries/:queryId', (req, res) => {
+    const g = store.removeMetric(req.params.id, req.params.queryId);
+    if (!g) return res.status(404).json({ error: { message: 'Metric group not found' } });
+    res.json(g);
   });
 
   // ---- Static frontend ------------------------------------------------------

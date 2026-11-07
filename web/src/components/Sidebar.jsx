@@ -25,6 +25,7 @@ export { Icon };
 export function Sidebar({
   tab, onTab, saved, templates, history, schema, schemaError, currentId,
   onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onInsert, onPreviewTable, onRefreshSchema, defaultCatalog, defaultSchema,
+  onCopySaved, onDeleteSaved,
 }) {
   return (
     <aside className="sidebar">
@@ -33,7 +34,7 @@ export function Sidebar({
         <button role="tab" aria-selected={tab === 'schema'} className={tab === 'schema' ? 'active' : ''} onClick={() => onTab('schema')}>Schema</button>
       </div>
       {tab === 'queries'
-        ? <QueriesPanel {...{ saved, templates, history, currentId, onNew, onOpenSaved, onOpenTemplate, onOpenHistory }} />
+        ? <QueriesPanel {...{ saved, templates, history, currentId, onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onCopySaved, onDeleteSaved }} />
         : <SchemaPanel {...{ schema, schemaError, onInsert, onPreviewTable, onRefreshSchema, defaultCatalog, defaultSchema }} />}
     </aside>
   );
@@ -54,7 +55,26 @@ function Section({ title, icon, count, children, defaultOpen = true }) {
   );
 }
 
-function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved, onOpenTemplate, onOpenHistory }) {
+/** The overflow menu (⋯) on a saved query: Make a copy / Delete. */
+function OverflowMenu({ label, items }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="overflow" onBlur={e => !e.currentTarget.contains(e.relatedTarget) && setOpen(false)}>
+      <button className="icon-btn overflow-btn" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={e => { e.stopPropagation(); setOpen(o => !o); }}>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="13" cy="8" r="1.4" /></svg>
+      </button>
+      {open && (
+        <div className="menu" role="menu">
+          {items.map(it => (
+            <button key={it.label} role="menuitem" className={it.danger ? 'danger-text' : ''} onClick={e => { e.stopPropagation(); setOpen(false); it.onClick(); }}>{it.label}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved, onOpenTemplate, onOpenHistory, onCopySaved, onDeleteSaved }) {
   const [filter, setFilter] = useState('');
   const f = filter.trim().toLowerCase();
   const match = (...s) => !f || s.some(x => (x || '').toLowerCase().includes(f));
@@ -85,19 +105,27 @@ function QueriesPanel({ saved, templates, history, currentId, onNew, onOpenSaved
         <Section title="Saved" icon="doc" count={savedFiltered.length}>
           {savedFiltered.length === 0 && <div className="side-empty">{f ? 'No matches' : 'Queries you save appear here.'}</div>}
           {savedFiltered.map(q => (
-            <button key={q.id} className={`side-item ${q.id === currentId ? 'current' : ''}`} onClick={() => onOpenSaved(q)}>
-              <span className="side-item-title">{q.title}</span>
-              <span className="side-item-meta">Edited {timeAgo(q.updatedAt)}</span>
-            </button>
+            <div key={q.id} className={`side-item-row ${q.id === currentId ? 'current' : ''}`}>
+              <button className="side-item" onClick={() => onOpenSaved(q)}>
+                <span className="side-item-title">{q.title}</span>
+                <span className="side-item-meta">Edited {timeAgo(q.updatedAt)}</span>
+              </button>
+              <OverflowMenu label={`More actions for ${q.title}`} items={[
+                { label: 'Make a copy', onClick: () => onCopySaved(q) },
+                { label: 'Delete', danger: true, onClick: () => onDeleteSaved(q) },
+              ]} />
+            </div>
           ))}
         </Section>
         <Section title="Scheduled" icon="calendar" count={scheduled.length}>
           {scheduled.length === 0 && <div className="side-empty">Schedule a saved query to run it daily, weekly or monthly.</div>}
+          {scheduled.length > 0 && <div className="template-cat">Created by you</div>}
           {scheduled.map(q => (
             <button key={q.id} className={`side-item ${q.id === currentId ? 'current' : ''}`} onClick={() => onOpenSaved(q)}>
               <span className="side-item-title">{q.title}</span>
               <span className="side-item-meta">
-                {q.schedule.frequency[0].toUpperCase() + q.schedule.frequency.slice(1)} at {String(q.schedule.hour).padStart(2, '0')}:00 UTC
+                {q.schedule.frequency[0].toUpperCase() + q.schedule.frequency.slice(1)}
+                {q.timeline?.nextRunAt && ` · next run ${new Date(q.timeline.nextRunAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })}`}
               </span>
             </button>
           ))}

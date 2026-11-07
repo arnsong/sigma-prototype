@@ -3,14 +3,14 @@
 import crypto from 'node:crypto';
 import { toTrinoError } from './trino.js';
 
-const KEEP_RUNS = 50;
+const KEEP_RUNS = 20;
 
 export class QueryRunner {
   /**
    * @param {import('./trino.js').TrinoClient} client
    * @param {{maxRows?: number, onFinish?: (run) => void}} [opts]
    */
-  constructor(client, { maxRows = 10000, onFinish } = {}) {
+  constructor(client, { maxRows = 100000, onFinish } = {}) {
     this.client = client;
     this.maxRows = maxRows;
     this.onFinish = onFinish;

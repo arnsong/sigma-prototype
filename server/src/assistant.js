@@ -9,6 +9,21 @@ const Answer = z.object({
   explanation: z.string().describe('One or two sentences on what the query does, or why it could not be written.'),
 });
 
+const Title = z.object({ title: z.string() });
+
+/** Fallback title from the tables a query reads, e.g. "Charges and customers query". */
+export function heuristicTitle(sql) {
+  const tables = [];
+  for (const m of String(sql).matchAll(/\b(?:from|join)\s+([\w."]+)/gi)) {
+    const t = m[1].replace(/"/g, '').split('.').pop();
+    if (t && !tables.includes(t) && !/^(unnest|select|lateral)$/i.test(t)) tables.push(t);
+  }
+  if (tables.length === 0) return 'Untitled query';
+  const words = tables.slice(0, 3).map(t => t.replace(/_/g, ' '));
+  const list = words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : words[0];
+  return `${list[0].toUpperCase()}${list.slice(1)} query`;
+}
+
 export function assistantEnabled(env = process.env) {
   return Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.ASSISTANT_ENABLED === 'true');
 }
@@ -39,7 +54,11 @@ export class Assistant {
     this.client = client || new Anthropic();
   }
 
-  async ask({ question, currentSql = '', error = '' }) {
+  /**
+   * @param {{question: string, mode?: 'generate'|'edit', currentSql?: string, error?: string, history?: {prompt: string, sql: string}[]}} req
+   * Generate writes a new query and ignores the editor; Edit modifies the SQL in the editor.
+   */
+  async ask({ question, mode = 'generate', currentSql = '', error = '', history = [] }) {
     const schemaText = schemaToText(await this.getSchema(), this.catalog, this.schema);
     // Stable content (instructions + schema) goes in the cached system prompt;
     // anything that changes per request goes in the user message.
@@ -58,9 +77,18 @@ export class Assistant {
         cache_control: { type: 'ephemeral' },
       },
     ];
-    let content = `Today is ${new Date().toISOString().slice(0, 10)}.\n\nQuestion: ${question}`;
-    if (currentSql.trim()) content += `\n\nThe editor currently contains:\n\`\`\`sql\n${currentSql}\n\`\`\``;
-    if (error) content += `\n\nRunning it failed with this Trino error; fix the query:\n${error}`;
+    let content = `Today is ${new Date().toISOString().slice(0, 10)}.`;
+    if (mode === 'edit') {
+      const recent = history.slice(-5);
+      if (recent.length) {
+        content += '\n\nEarlier requests in this conversation:\n' + recent.map((h, i) => `${i + 1}. ${h.prompt}`).join('\n');
+      }
+      if (currentSql.trim()) content += `\n\nModify this query from the editor:\n\`\`\`sql\n${currentSql}\n\`\`\``;
+      if (error) content += `\n\nRunning it failed with this Trino error; fix the query:\n${error}`;
+      content += `\n\nChange requested: ${question}`;
+    } else {
+      content += `\n\nWrite a new query for this question: ${question}`;
+    }
 
     const response = await this.client.beta.messages.parse({
       model: this.model,
@@ -83,5 +111,19 @@ export class Assistant {
       sql = prepareQuery(sql).trim();
     }
     return { sql, explanation: answer.explanation };
+  }
+
+  /** Short, editable title for a query (used when a query is first saved). */
+  async title(sql) {
+    const response = await this.client.beta.messages.parse({
+      model: this.model,
+      max_tokens: 2000,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: 'low', format: betaZodOutputFormat(Title) },
+      messages: [{ role: 'user', content: `Write a short title (at most 6 words, sentence case, no quotes) for a saved report that runs this SQL:\n\`\`\`sql\n${sql.slice(0, 8000)}\n\`\`\`` }],
+    });
+    if (response.stop_reason === 'refusal' || !response.parsed_output) return null;
+    return response.parsed_output.title.trim().slice(0, 80) || null;
   }
 }

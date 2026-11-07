@@ -7,6 +7,7 @@ import { seed } from './seed.js';
 import { Assistant, assistantEnabled } from './assistant.js';
 import { Scheduler } from './scheduler.js';
 import { loadSchema } from './app.js';
+import nodemailer from 'nodemailer';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -19,8 +20,9 @@ const config = {
   catalog,
   schema,
   // Schemas shown in the schema browser: comma-separated "catalog.schema" or "catalog".
-  schemas: (env.SCHEMA_BROWSER || `${catalog}.${schema},tpch.tiny`).split(',').map(s => s.trim()).filter(Boolean),
-  maxRows: Number(env.MAX_ROWS || 10000),
+  schemas: (env.SCHEMA_BROWSER || `${catalog}.${schema}`).split(',').map(s => s.trim()).filter(Boolean),
+  // Rows kept per run for paging/CSV; the UI shows at most 1,000 (as Sigma does).
+  maxRows: Number(env.MAX_ROWS || 100000),
   allowWrites: env.ALLOW_WRITES === 'true',
   seed: env.SEED !== 'false',
   seedTarget: `${env.SEED_CATALOG || catalog}.${env.SEED_SCHEMA || schema}`,
@@ -29,6 +31,10 @@ const config = {
   freshnessQuery: env.FRESHNESS_QUERY ?? (env.SEED !== 'false'
     ? `SELECT max(created) FROM ${env.SEED_CATALOG || catalog}.${env.SEED_SCHEMA || schema}.balance_transactions`
     : ''),
+  // There are no user accounts yet; this address is the "creator" auto-subscribed to schedules.
+  userEmail: env.USER_EMAIL || null,
+  publicUrl: env.PUBLIC_URL || `http://localhost:${env.PORT || 3001}`,
+  emailDelivery: Boolean(env.SMTP_URL),
   webDist: env.WEB_DIST || path.resolve(here, '../../web/dist'),
 };
 
@@ -53,14 +59,19 @@ const assistant = assistantEnabled(env)
 
 const scheduler = env.SCHEDULER === 'false'
   ? null
-  : new Scheduler({ client, store, dataDir: config.dataDir, maxRows: config.maxRows, allowWrites: config.allowWrites });
+  : new Scheduler({
+    client, store, dataDir: config.dataDir, maxRows: config.maxRows, allowWrites: config.allowWrites,
+    publicUrl: config.publicUrl,
+    mailer: env.SMTP_URL ? nodemailer.createTransport(env.SMTP_URL) : null,
+    mailFrom: env.MAIL_FROM || 'Query Studio <reports@localhost>',
+  });
 scheduler?.start();
 
 const app = createApp({ client, store, config, assistant, scheduler });
 
 app.listen(config.port, () => {
   console.log(`sigma-prototype API on http://localhost:${config.port} (Trino: ${config.trinoServer}, default ${catalog}.${schema})`);
-  console.log(`assistant: ${assistant ? `enabled (${assistant.model})` : 'disabled (set ANTHROPIC_API_KEY to enable)'}; scheduler: ${scheduler ? 'on' : 'off'}`);
+  console.log(`assistant: ${assistant ? `enabled (${assistant.model})` : 'disabled (set ANTHROPIC_API_KEY to enable)'}; scheduler: ${scheduler ? 'on' : 'off'}; email: ${config.emailDelivery ? 'SMTP' : 'off (set SMTP_URL)'}`);
 });
 
 if (config.seed) {

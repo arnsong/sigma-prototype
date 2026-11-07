@@ -18,9 +18,12 @@ services:
       TRINO_SERVER: http://trino:8080
       TRINO_CATALOG: memory
       TRINO_SCHEMA: billing
-      SCHEMA_BROWSER: memory.billing,tpch.tiny
+      SCHEMA_BROWSER: memory.billing
       # Enables the natural-language SQL assistant when set in your shell.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Optional: email delivery for scheduled queries, and the address treated as the creator.
+      SMTP_URL: ${SMTP_URL:-}
+      USER_EMAIL: ${USER_EMAIL:-}
     volumes:
       - app-data:/data
     depends_on:
